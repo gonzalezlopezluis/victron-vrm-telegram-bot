@@ -260,7 +260,7 @@ function getInstallationId(installation) {
 
 /**
  * Revisa todas las instalaciones y devuelve las incidencias offline.
- */
+ *
 async function checkOfflineInstallations() {
   const now = new Date();
   const thresholdMs = offlineThresholdMinutes * 60 * 1000;
@@ -344,8 +344,109 @@ async function checkOfflineInstallations() {
     offlineDevices,
     warnings
   };
-}
+} */
 
+async function checkOfflineInstallations() {
+  const now = new Date();
+  const thresholdMs = offlineThresholdMinutes * 60 * 1000;
+
+  const installations = await getInstallations();
+  const offlineInstallations = [];
+  const warnings = [];
+
+  for (const installation of installations) {
+    const idSite = getInstallationId(installation);
+    const installationName = getInstallationName(installation);
+
+    if (!idSite) {
+      warnings.push(`Instalación sin idSite: ${installationName}`);
+      console.warn(`[WARN] Instalación sin idSite: ${installationName}`);
+      continue;
+    }
+
+    try {
+      const alarms = await getInstallationAlarms(idSite);
+
+      const devices = Array.isArray(alarms?.devices)
+        ? alarms.devices
+        : Array.isArray(alarms?.records?.devices)
+          ? alarms.records.devices
+          : [];
+
+      if (!devices.length) {
+        warnings.push(`Sin devices en alarmas para ${installationName} (${idSite})`);
+        console.warn(`[WARN] Sin devices para ${installationName} (${idSite})`);
+        continue;
+      }
+
+      let latestConnection = null;
+      let latestDeviceName = null;
+      let validConnections = 0;
+
+      for (const device of devices) {
+        const lastConnectionDate = normalizeTimestamp(device?.lastConnection);
+
+        if (!lastConnectionDate) {
+          console.warn(
+            `[WARN] Dispositivo sin lastConnection válido en ${installationName} (${idSite})`
+          );
+          continue;
+        }
+
+        validConnections++;
+
+        if (!latestConnection || lastConnectionDate > latestConnection) {
+          latestConnection = lastConnectionDate;
+          latestDeviceName =
+            device?.name ||
+            device?.customName ||
+            device?.productName ||
+            device?.deviceName ||
+            device?.idDevice ||
+            "Dispositivo no identificado";
+        }
+      }
+
+      if (!latestConnection) {
+        warnings.push(
+          `No hay lastConnection válido para ningún dispositivo en ${installationName} (${idSite})`
+        );
+        continue;
+      }
+
+      const diffMs = now.getTime() - latestConnection.getTime();
+
+      if (diffMs > thresholdMs) {
+        offlineInstallations.push({
+          installationName,
+          idSite,
+          deviceName: latestDeviceName,
+          lastConnection: latestConnection,
+          elapsed: formatDuration(diffMs),
+          diffMs,
+          validConnections,
+          totalDevices: devices.length
+        });
+      }
+    } catch (error) {
+      warnings.push(
+        `Error consultando instalación ${installationName} (${idSite}): ${error.message}`
+      );
+      console.error(
+        `[ERROR] Fallo en instalación ${installationName} (${idSite}):`,
+        error.message
+      );
+    }
+  }
+
+  return {
+    checkedAt: now,
+    totalInstallations: installations.length,
+    offlineDevices: offlineInstallations,
+    warnings
+  };
+}
+  
 /**
  * Formatea una incidencia offline.
  */
