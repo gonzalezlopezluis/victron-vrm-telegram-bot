@@ -446,7 +446,7 @@ async function checkOfflineInstallations() {
     warnings
   };
 }
-  
+
 /**
  * Formatea una incidencia offline.
  */
@@ -636,7 +636,7 @@ console.log(`[CRON] Programado con CRON_TIME="${CRON_TIME}" y TIMEZONE="${TIMEZO
  * =========================
  */
 
-bot.onText(/^\/start$/, async (msg) => {
+/* bot.onText(/^\/start$/, async (msg) => {
   if (!isAuthorizedChat(msg)) {
     console.warn(`[SECURITY] Chat no autorizado ignorado: ${msg.chat.id}`);
     return;
@@ -650,6 +650,33 @@ bot.onText(/^\/start$/, async (msg) => {
       "• /test - Ejecuta una comprobación manual",
       "• /listar - Lista instalaciones disponibles"
     ].join("\n")
+  );
+});
+*/
+bot.onText(/^\/start$/, async (msg) => {
+  if (!isAuthorizedChat(msg)) {
+    console.warn(`[SECURITY] Chat no autorizado ignorado: ${msg.chat.id}`);
+    return;
+  }
+
+  await bot.sendMessage(
+    TELEGRAM_CHAT_ID,
+    [
+      "🤖 <b>Bot Victron VRM activo</b>",
+      "",
+      "Selecciona una opción:"
+    ].join("\n"),
+    {
+      parse_mode: "HTML",
+      reply_markup: {
+        keyboard: [
+          [{ text: "🔍 Test" }, { text: "📡 Listar" }],
+          [{ text: "ℹ️ Estado" }]
+        ],
+        resize_keyboard: true,
+        one_time_keyboard: false
+      }
+    }
   );
 });
 
@@ -679,6 +706,29 @@ bot.on("message", async (msg) => {
     return;
   }
 
+    if (msg.text === "🔍 Test") {
+    await handleTestCommand();
+    return;
+  }
+
+  if (msg.text === "📡 Listar") {
+    await handleListCommand();
+    return;
+  }
+
+  if (msg.text === "ℹ️ Estado") {
+    await sendLongMessage(
+      [
+        "🟢 <b>Bot activo</b>",
+        "",
+        `Cron: <code>${escapeHtml(CRON_TIME)}</code>`,
+        `Zona horaria: <code>${escapeHtml(TIMEZONE)}</code>`,
+        `Umbral offline: <b>${offlineThresholdMinutes}</b> minutos`
+      ].join("\n")
+    );
+    return;
+  }
+  
   const knownCommands = ["/start", "/test", "/listar"];
 
   if (msg.text.startsWith("/") && !knownCommands.includes(msg.text.trim())) {
