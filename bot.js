@@ -81,7 +81,6 @@ async function sendLongMessage(text) {
   if (!text) return;
 
   const chunks = [];
-
   let remaining = text;
 
   while (remaining.length > TELEGRAM_MAX_LENGTH) {
@@ -121,7 +120,7 @@ async function vrmFetch(path) {
       method: "GET",
       headers: {
         "x-authorization": `Token ${VRM_TOKEN}`,
-        "Accept": "application/json"
+        Accept: "application/json"
       }
     });
 
@@ -195,8 +194,6 @@ function normalizeTimestamp(lastConnection) {
     return null;
   }
 
-  // Si es mayor que 10^12, casi seguro está en milisegundos.
-  // Si es menor, se interpreta como segundos Unix.
   const timestampMs = value > 1_000_000_000_000
     ? value
     : value * 1000;
@@ -259,93 +256,52 @@ function getInstallationId(installation) {
 }
 
 /**
- * Revisa todas las instalaciones y devuelve las incidencias offline.
- *
-async function checkOfflineInstallations() {
-  const now = new Date();
-  const thresholdMs = offlineThresholdMinutes * 60 * 1000;
+ * Extrae estado básico de instalación de forma tolerante.
+ */
+function getInstallationStatus(installation) {
+  const possibleStatus =
+    installation?.status ||
+    installation?.state ||
+    installation?.connectionState ||
+    installation?.systemStatus ||
+    installation?.siteStatus ||
+    installation?.extended?.status ||
+    installation?.extended?.state ||
+    installation?.extended?.connectionState ||
+    installation?.extended?.systemStatus ||
+    installation?.extended?.siteStatus ||
+    installation?.overview?.status ||
+    installation?.overview?.state ||
+    installation?.overview?.connectionState ||
+    installation?.overview?.systemStatus ||
+    installation?.overview?.siteStatus ||
+    installation?.alarm ||
+    installation?.alarmStatus ||
+    installation?.hasAlarm ||
+    installation?.isOnline ||
+    installation?.online;
 
-  const installations = await getInstallations();
-  const offlineDevices = [];
-  const warnings = [];
+  if (possibleStatus === true) return "Online";
+  if (possibleStatus === false) return "Offline";
 
-  for (const installation of installations) {
-    const idSite = getInstallationId(installation);
-    const installationName = getInstallationName(installation);
-
-    if (!idSite) {
-      warnings.push(`Instalación sin idSite: ${installationName}`);
-      console.warn(`[WARN] Instalación sin idSite: ${installationName}`);
-      continue;
-    }
-
-    try {
-      const alarms = await getInstallationAlarms(idSite);
-
-      const devices = Array.isArray(alarms?.devices)
-        ? alarms.devices
-        : Array.isArray(alarms?.records?.devices)
-          ? alarms.records.devices
-          : [];
-
-      if (!devices.length) {
-        warnings.push(`Sin devices en alarmas para ${installationName} (${idSite})`);
-        console.warn(`[WARN] Sin devices para ${installationName} (${idSite})`);
-        continue;
-      }
-
-      for (const device of devices) {
-        const lastConnectionRaw = device?.lastConnection;
-        const lastConnectionDate = normalizeTimestamp(lastConnectionRaw);
-
-        if (!lastConnectionDate) {
-          warnings.push(
-            `Dispositivo sin lastConnection válido en ${installationName} (${idSite})`
-          );
-          console.warn(
-            `[WARN] lastConnection no válido en ${installationName} (${idSite})`
-          );
-          continue;
-        }
-
-        const diffMs = now.getTime() - lastConnectionDate.getTime();
-
-        if (diffMs > thresholdMs) {
-          offlineDevices.push({
-            installationName,
-            idSite,
-            deviceName:
-              device?.name ||
-              device?.customName ||
-              device?.productName ||
-              device?.deviceName ||
-              device?.idDevice ||
-              "Dispositivo no identificado",
-            lastConnection: lastConnectionDate,
-            elapsed: formatDuration(diffMs),
-            diffMs
-          });
-        }
-      }
-    } catch (error) {
-      warnings.push(
-        `Error consultando instalación ${installationName} (${idSite}): ${error.message}`
-      );
-      console.error(
-        `[ERROR] Fallo en instalación ${installationName} (${idSite}):`,
-        error.message
-      );
-    }
+  if (
+    possibleStatus !== undefined &&
+    possibleStatus !== null &&
+    possibleStatus !== ""
+  ) {
+    return String(possibleStatus);
   }
 
-  return {
-    checkedAt: now,
-    totalInstallations: installations.length,
-    offlineDevices,
-    warnings
-  };
-} */
+  return "No disponible";
+}
 
+/**
+ * Revisa todas las instalaciones.
+ *
+ * Importante:
+ * - Se genera una alerta por instalación, no por dispositivo.
+ * - Para cada instalación se usa la conexión más reciente de sus devices.
+ */
 async function checkOfflineInstallations() {
   const now = new Date();
   const thresholdMs = offlineThresholdMinutes * 60 * 1000;
@@ -448,22 +404,6 @@ async function checkOfflineInstallations() {
 }
 
 /**
- * Formatea una incidencia offline.
- */
-function formatOfflineDevice(item) {
-  return [
-    "🚨 <b>Instalación offline</b>",
-    `• Nombre: <b>${escapeHtml(item.installationName)}</b>`,
-    `• ID instalación: <code>${escapeHtml(String(item.idSite))}</code>`,
-    `• Dispositivo: ${escapeHtml(String(item.deviceName))}`,
-    `• Última conexión: ${item.lastConnection.toLocaleString("es-ES", {
-      timeZone: TIMEZONE
-    })}`,
-    `• Tiempo transcurrido: <b>${escapeHtml(item.elapsed)}</b>`
-  ].join("\n");
-}
-
-/**
  * Evita problemas básicos con HTML en Telegram.
  */
 function escapeHtml(value) {
@@ -471,6 +411,41 @@ function escapeHtml(value) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
+}
+
+/**
+ * Formatea una incidencia offline.
+ */
+function formatOfflineDevice(item) {
+  return [
+    "🚨 <b>Instalación offline</b>",
+    `• Nombre: <b>${escapeHtml(item.installationName)}</b>`,
+    `• ID instalación: <code>${escapeHtml(String(item.idSite))}</code>`,
+    `• Último dispositivo activo: ${escapeHtml(String(item.deviceName))}`,
+    `• Última conexión: ${item.lastConnection.toLocaleString("es-ES", {
+      timeZone: TIMEZONE
+    })}`,
+    `• Tiempo transcurrido: <b>${escapeHtml(item.elapsed)}</b>`,
+    `• Dispositivos revisados: ${item.validConnections}/${item.totalDevices}`
+  ].join("\n");
+}
+
+/**
+ * =========================
+ * Comando /estado
+ * =========================
+ */
+
+async function handleStatusCommand() {
+  await sendLongMessage(
+    [
+      "🟢 <b>Bot activo</b>",
+      "",
+      `Cron: <code>${escapeHtml(CRON_TIME)}</code>`,
+      `Zona horaria: <code>${escapeHtml(TIMEZONE)}</code>`,
+      `Umbral offline: <b>${offlineThresholdMinutes}</b> minutos`
+    ].join("\n")
+  );
 }
 
 /**
@@ -499,7 +474,7 @@ async function handleTestCommand() {
     if (result.offlineDevices.length === 0) {
       lines.push("✅ Todas las instalaciones están online.");
     } else {
-      lines.push("🚨 <b>Instalaciones/dispositivos con alerta:</b>");
+      lines.push("🚨 <b>Instalaciones con alerta:</b>");
       lines.push("");
 
       for (const item of result.offlineDevices) {
@@ -552,14 +527,7 @@ async function handleListCommand() {
     for (const installation of installations) {
       const name = getInstallationName(installation);
       const idSite = getInstallationId(installation);
-
-      const state =
-        installation?.state ||
-        installation?.status ||
-        installation?.systemStatus ||
-        installation?.connectionState ||
-        installation?.extended?.state ||
-        "No disponible";
+      const state = getInstallationStatus(installation);
 
       lines.push(`• <b>${escapeHtml(name)}</b>`);
       lines.push(`  ID: <code>${escapeHtml(String(idSite ?? "sin idSite"))}</code>`);
@@ -596,7 +564,7 @@ async function runDailyCheck() {
     const lines = [
       "🚨 <b>Alerta automática VRM</b>",
       "",
-      `Se han detectado ${result.offlineDevices.length} dispositivo(s)/instalación(es) offline.`,
+      `Se han detectado ${result.offlineDevices.length} instalación(es) offline.`,
       `Umbral configurado: ${offlineThresholdMinutes} minutos`,
       ""
     ];
@@ -636,23 +604,6 @@ console.log(`[CRON] Programado con CRON_TIME="${CRON_TIME}" y TIMEZONE="${TIMEZO
  * =========================
  */
 
-/* bot.onText(/^\/start$/, async (msg) => {
-  if (!isAuthorizedChat(msg)) {
-    console.warn(`[SECURITY] Chat no autorizado ignorado: ${msg.chat.id}`);
-    return;
-  }
-
-  await sendLongMessage(
-    [
-      "🤖 <b>Bot Victron VRM activo</b>",
-      "",
-      "Comandos disponibles:",
-      "• /test - Ejecuta una comprobación manual",
-      "• /listar - Lista instalaciones disponibles"
-    ].join("\n")
-  );
-});
-*/
 bot.onText(/^\/start$/, async (msg) => {
   if (!isAuthorizedChat(msg)) {
     console.warn(`[SECURITY] Chat no autorizado ignorado: ${msg.chat.id}`);
@@ -698,6 +649,15 @@ bot.onText(/^\/listar$/, async (msg) => {
   await handleListCommand();
 });
 
+bot.onText(/^\/estado$/, async (msg) => {
+  if (!isAuthorizedChat(msg)) {
+    console.warn(`[SECURITY] Chat no autorizado ignorado: ${msg.chat.id}`);
+    return;
+  }
+
+  await handleStatusCommand();
+});
+
 bot.on("message", async (msg) => {
   if (!msg.text) return;
 
@@ -706,7 +666,7 @@ bot.on("message", async (msg) => {
     return;
   }
 
-    if (msg.text === "🔍 Test") {
+  if (msg.text === "🔍 Test") {
     await handleTestCommand();
     return;
   }
@@ -717,23 +677,15 @@ bot.on("message", async (msg) => {
   }
 
   if (msg.text === "ℹ️ Estado") {
-    await sendLongMessage(
-      [
-        "🟢 <b>Bot activo</b>",
-        "",
-        `Cron: <code>${escapeHtml(CRON_TIME)}</code>`,
-        `Zona horaria: <code>${escapeHtml(TIMEZONE)}</code>`,
-        `Umbral offline: <b>${offlineThresholdMinutes}</b> minutos`
-      ].join("\n")
-    );
+    await handleStatusCommand();
     return;
   }
-  
-  const knownCommands = ["/start", "/test", "/listar"];
+
+  const knownCommands = ["/start", "/test", "/listar", "/estado"];
 
   if (msg.text.startsWith("/") && !knownCommands.includes(msg.text.trim())) {
     await sendLongMessage(
-      "Comando no reconocido. Usa /test o /listar."
+      "Comando no reconocido. Usa /test, /listar o /estado."
     );
   }
 });
