@@ -432,7 +432,226 @@ function formatOfflineDevice(item) {
 
 /**
  * =========================
- * Comando /estado
+ * FUNCIONES DE BATERÍA (SoC)
+ * =========================
+ */
+
+/**
+ * Obtiene el último State of Charge (SoC) de una instalación
+ * @param {string} idSite - ID de la instalación
+ * @returns {Promise<Object>} - { soc: number|null, lastUpdated: Date|null, deviceName: string, rawValue: number }
+ */
+async function getBatteryStatus(idSite) {
+  console.log(`[VRM] Consultando SoC para instalación ${idSite}...`);
+  
+  try {
+    // Llamada al endpoint de stats con parámetro bs (battery state of charge)
+    const data = await vrmFetch(
+      `/installations/${encodeURIComponent(idSite)}/stats?bs=1`
+    );
+    
+    // Verificar si la respuesta es válida
+    if (!data?.success || !data?.records?.bs) {
+      console.warn(`[VRM] Respuesta inválida para ${idSite}:`, data);
+      return {
+        soc: null,
+        lastUpdated: null,
+        deviceName: "N/A",
+        error: "Respuesta API inválida"
+      };
+    }
+    
+    const bsRecords = data.records.bs;
+    
+    if (!Array.isArray(bsRecords) || bsRecords.length === 0) {
+      console.warn(`[VRM] No hay registros bs para ${idSite}`);
+      return {
+        soc: null,
+        lastUpdated: null,
+        deviceName: "N/A",
+        error: "Sin datos de batería"
+      };
+    }
+    
+    // El último registro es el más reciente
+    const lastRecord = bsRecords[bsRecords.length - 1];
+    const timestamp = lastRecord[0];
+    const socValue = lastRecord[1];
+    
+    if (!timestamp || socValue === undefined || socValue === null) {
+      return {
+        soc: null,
+        lastUpdated: null,
+        deviceName: "N/A",
+        error: "Datos incompletos"
+      };
+    }
+    
+    const lastUpdated = new Date(timestamp);
+    const soc = Math.round(socValue);
+    
+    console.log(`[VRM] SoC para ${idSite}: ${soc}% (actualizado: ${lastUpdated.toISOString()})`);
+    
+    return {
+      soc: soc,
+      lastUpdated: lastUpdated,
+      deviceName: "Batería VRM",
+      rawValue: socValue
+    };
+    
+  } catch (error) {
+    console.error(`[VRM] Error obteniendo SoC para ${idSite}:`, error.message);
+    return {
+      soc: null,
+      lastUpdated: null,
+      deviceName: "N/A",
+      error: error.message
+    };
+  }
+}
+
+/**
+ * Obtiene todas las instalaciones con su estado de batería
+ */
+async function getAllInstallationsWithBatteryStatus() {
+  const installations = await getInstallations();
+  const results = [];
+  
+  for (const installation of installations) {
+    const idSite = getInstallationId(installation);
+    const installationName = getInstallationName(installation);
+    const status = getInstallationStatus(installation);
+    
+    if (!idSite) {
+      results.push({
+        idSite: null,
+        name: installationName,
+        status,
+        battery: null,
+        error: "Sin ID de instalación"
+      });
+      continue;
+    }
+    
+    try {
+      const batteryStatus = await getBatteryStatus(idSite);
+      
+      results.push({
+        idSite,
+        name: installationName,
+        status,
+        battery: batteryStatus.soc,
+        lastUpdated: batteryStatus.lastUpdated,
+        deviceName: batteryStatus.deviceName,
+        error: batteryStatus.error || null
+      });
+      
+      // Pequeña pausa para no saturar la API
+      await new Promise(resolve => setTimeout(resolve, 200));
+      
+    } catch (error) {
+      results.push({
+        idSite,
+        name: installationName,
+        status,
+        battery: null,
+        error: error.message
+      });
+    }
+  }
+  
+  return results;
+}
+
+/**
+ * Obtiene el emoji según nivel de batería
+ */
+function getBatteryEmoji(soc) {
+  if (soc === null) return "❓";
+  if (soc >= 80) return "🟢";
+  if (soc >= 50) return "🟡";
+  if (soc >= 20) return "🟠";
+  return "🔴";
+}
+
+/**
+ * Formatea una barra de batería visual
+ */
+function formatBatteryBar(soc, width = 10) {
+  if (soc === null) return "░░░░░░░░░░";
+  const filled = Math.round((soc / 100) * width);
+  const empty = width - filled;
+  return "█".repeat(filled) + "░".repeat(empty);
+}
+
+/**
+ * Formatea el reporte de baterías para enviar a Telegram
+ */
+function formatBatteryReport(installations) {
+  const lines = [
+    "🔋 <b>ESTADO DE BATERÍAS VRM</b>",
+    "",
+    `📊 <i>Reporte generado: ${new Date().toLocaleString("es-ES", {
+      timeZone: TIMEZONE
+    })}</i>`,
+    ""
+  ];
+  
+  let validReadings = 0;
+  let totalSoc = 0;
+  let warnings = 0;
+  
+  for (const inst of installations) {
+    const emoji = getBatteryEmoji(inst.battery);
+    const isOnline = inst.status?.toLowerCase().includes("online");
+    
+    lines.push(`<b>${emoji} ${escapeHtml(inst.name)}</b>`);
+    lines.push(`└ 📍 ID: <code>${escapeHtml(String(inst.idSite))}</code>`);
+    lines.push(`└ 📡 Estado: ${isOnline ? "🟢 Online" : "⚫ " + escapeHtml(String(inst.status))}`);
+    
+    if (inst.battery !== null && !isNaN(inst.battery)) {
+      const batteryBar = formatBatteryBar(inst.battery);
+      lines.push(`└ 🔋 SoC: <b>${inst.battery}%</b> ${batteryBar}`);
+      
+      if (inst.lastUpdated) {
+        const timeAgo = Math.floor((Date.now() - new Date(inst.lastUpdated).getTime()) / 60000);
+        const timeAgoText = timeAgo < 1 ? "hace menos de 1 minuto" : 
+                           timeAgo === 1 ? "hace 1 minuto" : 
+                           `hace ${timeAgo} minutos`;
+        lines.push(`└ 🕐 ${timeAgoText}`);
+      }
+      
+      validReadings++;
+      totalSoc += inst.battery;
+    } else if (inst.error) {
+      lines.push(`└ ⚠️ <i>${escapeHtml(inst.error)}</i>`);
+      warnings++;
+    } else {
+      lines.push(`└ ⚠️ <i>Sin datos de batería disponibles</i>`);
+      warnings++;
+    }
+    
+    lines.push("");
+  }
+  
+  // Resumen estadístico
+  if (validReadings > 0) {
+    const avgSoc = Math.round(totalSoc / validReadings);
+    const avgEmoji = getBatteryEmoji(avgSoc);
+    lines.push("📈 <b>RESUMEN</b>");
+    lines.push(`└ 📊 Instalaciones con datos: ${validReadings}/${installations.length}`);
+    lines.push(`└ ${avgEmoji} SoC promedio: <b>${avgSoc}%</b>`);
+    if (warnings > 0) {
+      lines.push(`└ ⚠️ Advertencias/errores: ${warnings}`);
+    }
+  }
+  
+  return lines.join("\n");
+}
+
+/**
+ * =========================
+ * Comandos del Bot
  * =========================
  */
 
@@ -443,16 +662,16 @@ async function handleStatusCommand() {
       "",
       `Cron: <code>${escapeHtml(CRON_TIME)}</code>`,
       `Zona horaria: <code>${escapeHtml(TIMEZONE)}</code>`,
-      `Umbral offline: <b>${offlineThresholdMinutes}</b> minutos`
+      `Umbral offline: <b>${offlineThresholdMinutes}</b> minutos`,
+      "",
+      "Comandos disponibles:",
+      "• /test - Verificar instalaciones offline",
+      "• /soc - Ver SoC de baterías",
+      "• /listar - Listar todas las instalaciones",
+      "• /estado - Estado del bot"
     ].join("\n")
   );
 }
-
-/**
- * =========================
- * Comando /test
- * =========================
- */
 
 async function handleTestCommand() {
   console.log("[BOT] Ejecutando /test");
@@ -500,12 +719,6 @@ async function handleTestCommand() {
   }
 }
 
-/**
- * =========================
- * Comando /listar
- * =========================
- */
-
 async function handleListCommand() {
   console.log("[BOT] Ejecutando /listar");
 
@@ -540,6 +753,33 @@ async function handleListCommand() {
     console.error("[BOT] Error en /listar:", error.message);
     await sendLongMessage(
       `❌ Error listando instalaciones:\n<code>${escapeHtml(error.message)}</code>`
+    );
+  }
+}
+
+/**
+ * NUEVO COMANDO: /soc - Consultar SoC de baterías
+ */
+async function handleSocCommand() {
+  console.log("[BOT] Ejecutando /soc");
+  
+  await sendLongMessage("🔍 Consultando estado de baterías de todas las instalaciones...");
+  
+  try {
+    const installations = await getAllInstallationsWithBatteryStatus();
+    
+    if (installations.length === 0) {
+      await sendLongMessage("❌ No se encontraron instalaciones para consultar.");
+      return;
+    }
+    
+    const report = formatBatteryReport(installations);
+    await sendLongMessage(report);
+    
+  } catch (error) {
+    console.error("[BOT] Error en /soc:", error.message);
+    await sendLongMessage(
+      `❌ Error consultando estado de baterías:\n<code>${escapeHtml(error.message)}</code>`
     );
   }
 }
@@ -621,8 +861,8 @@ bot.onText(/^\/start$/, async (msg) => {
       parse_mode: "HTML",
       reply_markup: {
         keyboard: [
-          [{ text: "🔍 Test" }, { text: "📡 Listar" }],
-          [{ text: "ℹ️ Estado" }]
+          [{ text: "🔍 Test" }, { text: "🔋 Consultar SoC" }],
+          [{ text: "📡 Listar" }, { text: "ℹ️ Estado" }]
         ],
         resize_keyboard: true,
         one_time_keyboard: false
@@ -658,6 +898,16 @@ bot.onText(/^\/estado$/, async (msg) => {
   await handleStatusCommand();
 });
 
+// NUEVO: Handler para /soc
+bot.onText(/^\/soc$/, async (msg) => {
+  if (!isAuthorizedChat(msg)) {
+    console.warn(`[SECURITY] Chat no autorizado ignorado: ${msg.chat.id}`);
+    return;
+  }
+
+  await handleSocCommand();
+});
+
 bot.on("message", async (msg) => {
   if (!msg.text) return;
 
@@ -671,6 +921,11 @@ bot.on("message", async (msg) => {
     return;
   }
 
+  if (msg.text === "🔋 Consultar SoC") {
+    await handleSocCommand();
+    return;
+  }
+
   if (msg.text === "📡 Listar") {
     await handleListCommand();
     return;
@@ -681,11 +936,11 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  const knownCommands = ["/start", "/test", "/listar", "/estado"];
+  const knownCommands = ["/start", "/test", "/soc", "/listar", "/estado"];
 
   if (msg.text.startsWith("/") && !knownCommands.includes(msg.text.trim())) {
     await sendLongMessage(
-      "Comando no reconocido. Usa /test, /listar o /estado."
+      "Comando no reconocido. Usa /test, /soc, /listar o /estado."
     );
   }
 });
