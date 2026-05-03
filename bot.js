@@ -157,8 +157,23 @@ async function getInstallations() {
         : [];
 
   console.log(`[VRM] Instalaciones encontradas: ${installations.length}`);
-
-  return installations;
+  
+  // Enriquecer cada instalación con su estado online
+  const installationsWithStatus = [];
+  for (const installation of installations) {
+    const idSite = getInstallationId(installation);
+    if (idSite) {
+      const statusInfo = await getInstallationStatus(installation, idSite);
+      installationsWithStatus.push({
+        ...installation,
+        _statusInfo: statusInfo
+      });
+    } else {
+      installationsWithStatus.push(installation);
+    }
+  }
+  
+  return installationsWithStatus;
 }
 
 /**
@@ -256,51 +271,100 @@ function getInstallationId(installation) {
 }
 
 /**
- * Extrae estado básico de instalación de forma tolerante.
+ * Determina si una instalación está online basado en sus dispositivos
+ * @param {Object} installation - Objeto de instalación de VRM
+ * @param {string} idSite - ID de la instalación
+ * @returns {Promise<Object>} - { isOnline: boolean, status: string, lastConnection: Date|null }
  */
-function getInstallationStatus(installation) {
-  const possibleStatus =
+async function getInstallationStatus(installation, idSite) {
+  // 1. Primero, intentar obtener estado desde la propia instalación
+  const possibleStatus = 
     installation?.status ||
     installation?.state ||
     installation?.connectionState ||
-    installation?.systemStatus ||
-    installation?.siteStatus ||
-    installation?.extended?.status ||
-    installation?.extended?.state ||
-    installation?.extended?.connectionState ||
-    installation?.extended?.systemStatus ||
-    installation?.extended?.siteStatus ||
-    installation?.overview?.status ||
-    installation?.overview?.state ||
-    installation?.overview?.connectionState ||
-    installation?.overview?.systemStatus ||
-    installation?.overview?.siteStatus ||
-    installation?.alarm ||
-    installation?.alarmStatus ||
-    installation?.hasAlarm ||
-    installation?.isOnline ||
-    installation?.online;
-
-  if (possibleStatus === true) return "Online";
-  if (possibleStatus === false) return "Offline";
-
-  if (
-    possibleStatus !== undefined &&
-    possibleStatus !== null &&
-    possibleStatus !== ""
-  ) {
-    return String(possibleStatus);
+    installation?.isOnline;
+  
+  if (possibleStatus === true) return { isOnline: true, status: "Online", lastConnection: null };
+  if (possibleStatus === false) return { isOnline: false, status: "Offline", lastConnection: null };
+  if (typeof possibleStatus === "string" && possibleStatus.toLowerCase() === "online") {
+    return { isOnline: true, status: "Online", lastConnection: null };
   }
-
-  return "No disponible";
+  
+  // 2. Si no hay estado directo, consultar alarmas para obtener última conexión
+  try {
+    const alarms = await getInstallationAlarms(idSite);
+    
+    const devices = Array.isArray(alarms?.devices)
+      ? alarms.devices
+      : Array.isArray(alarms?.records?.devices)
+        ? alarms.records.devices
+        : [];
+    
+    if (devices.length === 0) {
+      return { isOnline: false, status: "Sin dispositivos", lastConnection: null };
+    }
+    
+    // Buscar la última conexión entre todos los dispositivos
+    let latestConnection = null;
+    let onlineDevices = 0;
+    
+    for (const device of devices) {
+      const lastConnectionDate = normalizeTimestamp(device?.lastConnection);
+      
+      if (lastConnectionDate) {
+        if (!latestConnection || lastConnectionDate > latestConnection) {
+          latestConnection = lastConnectionDate;
+        }
+        
+        // Determinar si este dispositivo está online (última conexión hace menos de 15 minutos)
+        const now = new Date();
+        const diffMinutes = (now.getTime() - lastConnectionDate.getTime()) / 60000;
+        if (diffMinutes < 15) {
+          onlineDevices++;
+        }
+      }
+    }
+    
+    if (!latestConnection) {
+      return { isOnline: false, status: "Sin conexión registrada", lastConnection: null };
+    }
+    
+    // Verificar si la última conexión fue hace menos del umbral configurado
+    const now = new Date();
+    const diffMinutes = (now.getTime() - latestConnection.getTime()) / 60000;
+    const isOnline = diffMinutes < offlineThresholdMinutes;
+    
+    let statusText = "";
+    if (isOnline) {
+      if (onlineDevices > 0) {
+        statusText = `Online (${onlineDevices} disp. activos)`;
+      } else {
+        statusText = "Online";
+      }
+    } else {
+      const hoursOffline = Math.floor(diffMinutes / 60);
+      const minutesOffline = Math.floor(diffMinutes % 60);
+      if (hoursOffline > 0) {
+        statusText = `Offline (${hoursOffline}h ${minutesOffline}m)`;
+      } else {
+        statusText = `Offline (${minutesOffline}m)`;
+      }
+    }
+    
+    return {
+      isOnline,
+      status: statusText,
+      lastConnection: latestConnection
+    };
+    
+  } catch (error) {
+    console.error(`[ERROR] Error obteniendo estado para ${idSite}:`, error.message);
+    return { isOnline: false, status: "Error consultando estado", lastConnection: null };
+  }
 }
 
 /**
- * Revisa todas las instalaciones.
- *
- * Importante:
- * - Se genera una alerta por instalación, no por dispositivo.
- * - Para cada instalación se usa la conexión más reciente de sus devices.
+ * Revisa todas las instalaciones para detectar offline.
  */
 async function checkOfflineInstallations() {
   const now = new Date();
@@ -445,19 +509,17 @@ async function getBatteryStatus(idSite) {
   console.log(`[VRM] Consultando SoC para instalación ${idSite}...`);
   
   try {
-    // Llamada al endpoint de stats con parámetro bs (battery state of charge)
     const data = await vrmFetch(
       `/installations/${encodeURIComponent(idSite)}/stats?bs=1`
     );
     
-    // Verificar si la respuesta es válida
     if (!data?.success || !data?.records?.bs) {
-      console.warn(`[VRM] Respuesta inválida para ${idSite}:`, data);
+      console.warn(`[VRM] Respuesta inválida para ${idSite}`);
       return {
         soc: null,
         lastUpdated: null,
         deviceName: "N/A",
-        error: "Error al intentar consultar los datos"
+        error: "Respuesta API inválida"
       };
     }
     
@@ -473,7 +535,6 @@ async function getBatteryStatus(idSite) {
       };
     }
     
-    // El último registro es el más reciente
     const lastRecord = bsRecords[bsRecords.length - 1];
     const timestamp = lastRecord[0];
     const socValue = lastRecord[1];
@@ -520,13 +581,13 @@ async function getAllInstallationsWithBatteryStatus() {
   for (const installation of installations) {
     const idSite = getInstallationId(installation);
     const installationName = getInstallationName(installation);
-    const status = getInstallationStatus(installation);
+    const statusInfo = installation._statusInfo || { status: "Desconocido" };
     
     if (!idSite) {
       results.push({
         idSite: null,
         name: installationName,
-        status,
+        status: statusInfo.status,
         battery: null,
         error: "Sin ID de instalación"
       });
@@ -539,21 +600,21 @@ async function getAllInstallationsWithBatteryStatus() {
       results.push({
         idSite,
         name: installationName,
-        status,
+        status: statusInfo.status,
+        isOnline: statusInfo.isOnline,
         battery: batteryStatus.soc,
         lastUpdated: batteryStatus.lastUpdated,
         deviceName: batteryStatus.deviceName,
         error: batteryStatus.error || null
       });
       
-      // Pequeña pausa para no saturar la API
       await new Promise(resolve => setTimeout(resolve, 200));
       
     } catch (error) {
       results.push({
         idSite,
         name: installationName,
-        status,
+        status: statusInfo.status,
         battery: null,
         error: error.message
       });
@@ -603,11 +664,11 @@ function formatBatteryReport(installations) {
   
   for (const inst of installations) {
     const emoji = getBatteryEmoji(inst.battery);
-    const isOnline = inst.status?.toLowerCase().includes("online");
+    const statusEmoji = inst.isOnline ? "🟢" : "🔴";
     
-    lines.push(`<b>${emoji} ${escapeHtml(inst.name)}</b>`);
+    lines.push(`${emoji} <b>${escapeHtml(inst.name)}</b>`);
     lines.push(`└ 📍 ID: <code>${escapeHtml(String(inst.idSite))}</code>`);
-    lines.push(`└ 📡 Estado: ${isOnline ? "🟢 Online" : "⚫ " + escapeHtml(String(inst.status))}`);
+    lines.push(`└ 📡 Estado: ${statusEmoji} ${escapeHtml(String(inst.status))}`);
     
     if (inst.battery !== null && !isNaN(inst.battery)) {
       const batteryBar = formatBatteryBar(inst.battery);
@@ -634,7 +695,6 @@ function formatBatteryReport(installations) {
     lines.push("");
   }
   
-  // Resumen estadístico
   if (validReadings > 0) {
     const avgSoc = Math.round(totalSoc / validReadings);
     const avgEmoji = getBatteryEmoji(avgSoc);
@@ -723,6 +783,8 @@ async function handleListCommand() {
   console.log("[BOT] Ejecutando /listar");
 
   try {
+    await sendLongMessage("📡 Obteniendo lista de instalaciones...");
+    
     const installations = await getInstallations();
 
     if (!installations.length) {
@@ -731,23 +793,47 @@ async function handleListCommand() {
     }
 
     const lines = [
-      "📡 <b>Instalaciones VRM disponibles</b>",
+      "📡 <b>INSTALACIONES VRM MONITORIZADAS</b>",
       "",
       `Total: <b>${installations.length}</b>`,
+      "━━━━━━━━━━━━━━━━━━━━━━",
       ""
     ];
 
     for (const installation of installations) {
       const name = getInstallationName(installation);
       const idSite = getInstallationId(installation);
-      const state = getInstallationStatus(installation);
-
-      lines.push(`• <b>${escapeHtml(name)}</b>`);
-      lines.push(`  ID: <code>${escapeHtml(String(idSite ?? "sin idSite"))}</code>`);
-      lines.push(`  Estado: ${escapeHtml(String(state))}`);
+      
+      let statusText = "";
+      let statusEmoji = "";
+      let lastConnectionInfo = "";
+      
+      if (installation._statusInfo) {
+        const info = installation._statusInfo;
+        statusEmoji = info.isOnline ? "🟢" : "🔴";
+        statusText = info.status;
+        
+        if (info.lastConnection) {
+          const timeAgo = Math.floor((Date.now() - info.lastConnection.getTime()) / 60000);
+          const timeText = timeAgo < 1 ? "hace momentos" : 
+                          timeAgo === 1 ? "hace 1 minuto" : 
+                          `hace ${timeAgo} minutos`;
+          lastConnectionInfo = `\n└ 🕐 Última conexión: ${timeText}`;
+        }
+      } else {
+        statusEmoji = "⚫";
+        statusText = "No disponible";
+      }
+      
+      lines.push(`${statusEmoji} <b>${escapeHtml(name)}</b>`);
+      lines.push(`└ 📍 ID: <code>${escapeHtml(String(idSite ?? "sin idSite"))}</code>`);
+      lines.push(`└ 📡 Estado: ${escapeHtml(String(statusText))}${lastConnectionInfo}`);
       lines.push("");
     }
 
+    lines.push("━━━━━━━━━━━━━━━━━━━━━━");
+    lines.push("🟢 Online  🔴 Offline");
+    
     await sendLongMessage(lines.join("\n"));
   } catch (error) {
     console.error("[BOT] Error en /listar:", error.message);
@@ -757,9 +843,6 @@ async function handleListCommand() {
   }
 }
 
-/**
- * NUEVO COMANDO: /soc - Consultar SoC de baterías
- */
 async function handleSocCommand() {
   console.log("[BOT] Ejecutando /soc");
   
@@ -920,7 +1003,6 @@ bot.onText(/^\/estado$/, async (msg) => {
   await handleStatusCommand();
 });
 
-// NUEVO: Handler para /soc
 bot.onText(/^\/soc$/, async (msg) => {
   if (!isAuthorizedChat(msg)) {
     console.warn(`[SECURITY] Chat no autorizado ignorado: ${msg.chat.id}`);
@@ -938,7 +1020,7 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  if (msg.text === "🔍 Test") {
+  if (msg.text === "🔍 Test Estado") {
     await handleTestCommand();
     return;
   }
@@ -948,12 +1030,12 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  if (msg.text === "📡 Listar") {
+  if (msg.text === "📡 Listar Instalaciones") {
     await handleListCommand();
     return;
   }
 
-  if (msg.text === "ℹ️ Estado") {
+  if (msg.text === "ℹ️ Estado del Bot") {
     await handleStatusCommand();
     return;
   }
@@ -962,7 +1044,7 @@ bot.on("message", async (msg) => {
 
   if (msg.text.startsWith("/") && !knownCommands.includes(msg.text.trim())) {
     await sendLongMessage(
-      "Comando no reconocido. Usa /test, /soc, /listar o /estado."
+      "❓ Comando no reconocido.\n\nUsa los botones del menú o comandos:\n/test, /soc, /listar o /estado."
     );
   }
 });
