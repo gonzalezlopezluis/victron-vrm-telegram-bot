@@ -457,7 +457,7 @@ async function getBatteryStatus(idSite) {
         soc: null,
         lastUpdated: null,
         deviceName: "N/A",
-        error: "Respuesta API inválida"
+        error: "Error al intentar consultar los datos"
       };
     }
     
@@ -853,16 +853,38 @@ bot.onText(/^\/start$/, async (msg) => {
   await bot.sendMessage(
     TELEGRAM_CHAT_ID,
     [
-      "🤖 <b>Bot Victron VRM activo</b>",
+      "⚓ <b>AUTORIDAD PORTUARIA DE SANTA CRUZ DE TENERIFE</b>",
+      "<i>Sistemas de Ayudas a la Navegación</i>",
       "",
-      "Selecciona una opción:"
+      "━━━━━━━━━━━━━━━━━━━━━━",
+      "",
+      "🟢 <b>Estado del Sistema VRM</b>",
+      "",
+      "🗺️ <b>Instalaciones monitoreadas:</b>",
+      "• Sistemas de alimentación ininterrumpida",
+      "• Equipos de señalización marítima",
+      "• Estaciones de control de tráfico portuario",
+      "• Respaldo energético en faros y boyas",
+      "",
+      "📊 <b>Métricas en tiempo real:</b>",
+      "• 🔋 Estado de carga de baterías (SoC)",
+      "• ⚡ Consumo y generación energética",
+      "• 🌐 Estado de conectividad de equipos",
+      "• 🚨 Alertas automáticas de fallos",
+      "",
+      "━━━━━━━━━━━━━━━━━━━━━━",
+      "",
+      "🤖 <i>Bot desarrollado para supervisión remota",
+      "del sistema de gestión energética Victron VRM</i>",
+      "",
+      "<b>Selecciona una opción:</b>"
     ].join("\n"),
     {
       parse_mode: "HTML",
       reply_markup: {
         keyboard: [
-          [{ text: "🔍 Test" }, { text: "🔋 Consultar SoC" }],
-          [{ text: "📡 Listar" }, { text: "ℹ️ Estado" }]
+          [{ text: "🔍 Test Estado" }, { text: "🔋 Consultar SoC" }],
+          [{ text: "📡 Listar Instalaciones" }, { text: "ℹ️ Estado del Bot" }]
         ],
         resize_keyboard: true,
         one_time_keyboard: false
