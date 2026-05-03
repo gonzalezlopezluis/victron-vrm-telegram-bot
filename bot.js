@@ -68,6 +68,46 @@ const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, {
 console.log("[BOT] Bot de Telegram iniciado en modo polling");
 
 /**
+ * =========================
+ * Configurar comandos del bot (menú /)
+ * =========================
+ */
+
+async function setupBotCommands() {
+  try {
+    await bot.setMyCommands([
+      {
+        command: "start",
+        description: "🟢 Iniciar bot y mostrar menú principal"
+      },
+      {
+        command: "test",
+        description: "📴 Verificar instalaciones offline"
+      },
+      {
+        command: "soc",
+        description: "🔋 Consultar estado de carga de baterías (SoC)"
+      },
+      {
+        command: "listar",
+        description: "📡 Listar todas las instalaciones VRM"
+      },
+      {
+        command: "estado",
+        description: "ℹ️ Mostrar estado del bot y configuración"
+      }
+    ]);
+    
+    console.log("[BOT] Comandos del bot configurados correctamente");
+  } catch (error) {
+    console.error("[BOT] Error configurando comandos:", error.message);
+  }
+}
+
+// Llamar a la función después de crear el bot
+setupBotCommands();
+
+/**
  * Comprueba si el mensaje viene del chat autorizado.
  */
 function isAuthorizedChat(msg) {
@@ -966,7 +1006,7 @@ bot.onText(/^\/start$/, async (msg) => {
       parse_mode: "HTML",
       reply_markup: {
         keyboard: [
-          [{ text: "🔍 Test Estado" }, { text: "🔋 Consultar SoC" }],
+          [{ text: "📴 Instalaciones Offline" }, { text: "🔋 Consultar SoC" }],
           [{ text: "📡 Listar Instalaciones" }, { text: "ℹ️ Estado del Bot" }]
         ],
         resize_keyboard: true,
@@ -1020,7 +1060,7 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  if (msg.text === "🔍 Test Estado") {
+  if (msg.text === "📴 Instalaciones Offline") {
     await handleTestCommand();
     return;
   }
