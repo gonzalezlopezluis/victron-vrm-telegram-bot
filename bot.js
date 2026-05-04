@@ -20,7 +20,9 @@ const {
   CRON_TIME = "0 8 * * *",
   TIMEZONE = "Atlantic/Canary",
   OFFLINE_THRESHOLD_MINUTES = "60",
-  PORT = 3000
+  PORT = 3000,
+  NOTIFY_UNAUTHORIZED = "true",
+  LOG_AUTHORIZED = "false"
 } = process.env;
 
 const VRM_BASE_URL = "https://vrmapi.victronenergy.com/v2";
@@ -49,6 +51,7 @@ if (ADMIN_IDS.length === 0) {
 
 console.log(`[BOT] Administradores: ${ADMIN_IDS.length}`);
 console.log(`[BOT] Usuarios autorizados: ${authorizedChatIds.length}`);
+console.log(`[BOT] Notificaciones de intentos no autorizados: ${NOTIFY_UNAUTHORIZED === "true" ? "ACTIVADAS" : "DESACTIVADAS"}`);
 
 // Validaciones obligatorias
 if (!TELEGRAM_BOT_TOKEN) throw new Error("Falta TELEGRAM_BOT_TOKEN");
@@ -116,6 +119,12 @@ async function setupBotCommands() {
 setupBotCommands();
 
 /**
+ * =========================
+ * Funciones de autorización y logging
+ * =========================
+ */
+
+/**
  * Comprueba si el mensaje viene de un chat autorizado.
  */
 function isAuthorizedChat(msg) {
@@ -127,6 +136,64 @@ function isAuthorizedChat(msg) {
  */
 function isAdmin(msg) {
   return ADMIN_IDS.includes(String(msg.chat.id));
+}
+
+/**
+ * Registra intentos no autorizados con detalles completos
+ */
+async function logUnauthorizedAttempt(msg, action = "desconocida") {
+  const userId = msg.chat.id;
+  const username = msg.from?.username || msg.from?.first_name || msg.from?.last_name || "sin username";
+  const fullName = [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(" ") || "sin nombre";
+  const text = msg.text || msg.caption || "[sin texto]";
+  const timestamp = new Date().toISOString();
+  
+  // Log detallado en consola (visible en Render Logs)
+  console.warn(`╔══════════════════════════════════════════════════════════════╗`);
+  console.warn(`║ [SECURITY] INTENTO NO AUTORIZADO                               ║`);
+  console.warn(`╠══════════════════════════════════════════════════════════════╣`);
+  console.warn(`║ 👤 ID Usuario: ${userId}`);
+  console.warn(`║ 📝 Nombre: ${fullName}`);
+  console.warn(`║ 🔖 Username: @${username}`);
+  console.warn(`║ 🎯 Acción: ${action}`);
+  console.warn(`║ 💬 Mensaje: ${text.substring(0, 150)}`);
+  console.warn(`║ 🕐 Hora: ${timestamp}`);
+  console.warn(`╚══════════════════════════════════════════════════════════════╝`);
+  
+  // Notificar a administradores (opcional)
+  if (NOTIFY_UNAUTHORIZED === "true" && ADMIN_IDS.length > 0) {
+    for (const adminId of ADMIN_IDS) {
+      try {
+        await bot.sendMessage(
+          adminId,
+          `⚠️ <b>🔒 INTENTO NO AUTORIZADO</b>\n\n` +
+          `👤 <b>Usuario:</b> <code>${userId}</code>\n` +
+          `📝 <b>Nombre:</b> ${escapeHtml(fullName)}\n` +
+          `🔖 <b>Username:</b> @${escapeHtml(username)}\n` +
+          `🎯 <b>Acción:</b> ${escapeHtml(action)}\n` +
+          `💬 <b>Mensaje:</b> "${escapeHtml(text.substring(0, 150))}"\n` +
+          `🕐 <b>Hora:</b> ${new Date().toLocaleString("es-ES", { timeZone: TIMEZONE })}\n\n` +
+          `🔧 <i>Para autorizar este usuario, añade su ID a TELEGRAM_ALLOWED_IDS en Render.</i>`,
+          { parse_mode: "HTML" }
+        );
+      } catch (error) {
+        console.error(`[ERROR] No se pudo notificar a admin ${adminId}:`, error.message);
+      }
+    }
+  }
+}
+
+/**
+ * Registra accesos exitosos (opcional, para auditoría)
+ */
+async function logAuthorizedAccess(msg, action = "desconocida") {
+  if (LOG_AUTHORIZED !== "true") return;
+  
+  const userId = msg.chat.id;
+  const username = msg.from?.username || msg.from?.first_name || "sin username";
+  const text = msg.text || "[sin texto]";
+  
+  console.log(`[AUDIT] Acceso autorizado - Usuario: ${userId} (@${username}) - Acción: ${action} - Mensaje: "${text.substring(0, 100)}"`);
 }
 
 /**
@@ -585,9 +652,12 @@ function formatBatteryReport(installations) {
 // /start
 bot.onText(/^\/start$/, async (msg) => {
   if (!isAuthorizedChat(msg)) {
-    await bot.sendMessage(msg.chat.id, "❌ No estás autorizado para usar este bot.");
+    await logUnauthorizedAttempt(msg, "/start");
+    await bot.sendMessage(msg.chat.id, "❌ No estás autorizado para usar este bot.\n\nContacta con el administrador para solicitar acceso.");
     return;
   }
+  
+  await logAuthorizedAccess(msg, "/start");
 
   await bot.sendMessage(
     msg.chat.id,
@@ -634,9 +704,14 @@ bot.onText(/^\/start$/, async (msg) => {
 
 // /test
 bot.onText(/^\/test$/, async (msg) => {
-  if (!isAuthorizedChat(msg)) return;
+  if (!isAuthorizedChat(msg)) {
+    await logUnauthorizedAttempt(msg, "/test");
+    return;
+  }
   
+  await logAuthorizedAccess(msg, "/test");
   await bot.sendMessage(msg.chat.id, "🔎 Ejecutando comprobación manual de instalaciones VRM...");
+  
   try {
     const result = await checkOfflineInstallations();
     const lines = [
@@ -667,9 +742,14 @@ bot.onText(/^\/test$/, async (msg) => {
 
 // /listar
 bot.onText(/^\/listar$/, async (msg) => {
-  if (!isAuthorizedChat(msg)) return;
+  if (!isAuthorizedChat(msg)) {
+    await logUnauthorizedAttempt(msg, "/listar");
+    return;
+  }
   
+  await logAuthorizedAccess(msg, "/listar");
   await bot.sendMessage(msg.chat.id, "📡 Obteniendo lista de instalaciones...");
+  
   try {
     const installations = await getInstallations();
     if (!installations.length) {
@@ -707,9 +787,14 @@ bot.onText(/^\/listar$/, async (msg) => {
 
 // /soc
 bot.onText(/^\/soc$/, async (msg) => {
-  if (!isAuthorizedChat(msg)) return;
+  if (!isAuthorizedChat(msg)) {
+    await logUnauthorizedAttempt(msg, "/soc");
+    return;
+  }
   
+  await logAuthorizedAccess(msg, "/soc");
   await bot.sendMessage(msg.chat.id, "🔍 Consultando estado de baterías...");
+  
   try {
     const installations = await getAllInstallationsWithBatteryStatus();
     if (installations.length === 0) {
@@ -724,7 +809,12 @@ bot.onText(/^\/soc$/, async (msg) => {
 
 // /estado
 bot.onText(/^\/estado$/, async (msg) => {
-  if (!isAuthorizedChat(msg)) return;
+  if (!isAuthorizedChat(msg)) {
+    await logUnauthorizedAttempt(msg, "/estado");
+    return;
+  }
+  
+  await logAuthorizedAccess(msg, "/estado");
   
   await sendLongMessage(
     msg.chat.id,
@@ -749,11 +839,17 @@ bot.onText(/^\/estado$/, async (msg) => {
 
 // /usuarios (solo admin)
 bot.onText(/^\/usuarios$/, async (msg) => {
-  if (!isAuthorizedChat(msg)) return;
+  if (!isAuthorizedChat(msg)) {
+    await logUnauthorizedAttempt(msg, "/usuarios");
+    return;
+  }
+  
   if (!isAdmin(msg)) {
     await bot.sendMessage(msg.chat.id, "❌ Solo administradores pueden ver la lista de usuarios.");
     return;
   }
+  
+  await logAuthorizedAccess(msg, "/usuarios");
   
   const lines = [
     "👥 <b>USUARIOS AUTORIZADOS</b>", "",
@@ -769,7 +865,11 @@ bot.onText(/^\/usuarios$/, async (msg) => {
 
 // /broadcast (solo admin)
 bot.onText(/^\/broadcast (.+)$/, async (msg, match) => {
-  if (!isAuthorizedChat(msg)) return;
+  if (!isAuthorizedChat(msg)) {
+    await logUnauthorizedAttempt(msg, "/broadcast");
+    return;
+  }
+  
   if (!isAdmin(msg)) {
     await bot.sendMessage(msg.chat.id, "❌ Solo administradores pueden usar /broadcast");
     return;
@@ -779,7 +879,9 @@ bot.onText(/^\/broadcast (.+)$/, async (msg, match) => {
   const adminName = msg.from?.first_name || msg.from?.username || msg.chat.id;
   console.log(`[BOT] Admin ${adminName} envió broadcast`);
   
+  await logAuthorizedAccess(msg, "/broadcast");
   await bot.sendMessage(msg.chat.id, "📢 Enviando mensaje a todos los usuarios...");
+  
   const results = await sendToAllAuthorized(`📢 <b>MENSAJE DEL ADMINISTRADOR</b>\n\n${message}`, { parse_mode: "HTML" });
   const successCount = results.filter(r => r.success).length;
   await bot.sendMessage(msg.chat.id, `✅ Mensaje enviado a ${successCount}/${authorizedChatIds.length} usuarios`);
@@ -793,10 +895,15 @@ bot.onText(/^\/broadcast (.+)$/, async (msg, match) => {
 
 bot.on("message", async (msg) => {
   if (!msg.text) return;
-  if (!isAuthorizedChat(msg)) return;
+  
+  if (!isAuthorizedChat(msg)) {
+    await logUnauthorizedAttempt(msg, "mensaje_general");
+    return;
+  }
 
   // Botones del menú
   if (msg.text === "📴 Instalaciones Offline") {
+    await logAuthorizedAccess(msg, "boton_offline");
     await bot.sendMessage(msg.chat.id, "🔎 Ejecutando comprobación...");
     const result = await checkOfflineInstallations();
     const lines = [`📋 Instalaciones offline: ${result.offlineDevices.length}`];
@@ -805,6 +912,7 @@ bot.on("message", async (msg) => {
   }
 
   if (msg.text === "🔋 Consultar SoC") {
+    await logAuthorizedAccess(msg, "boton_soc");
     await bot.sendMessage(msg.chat.id, "🔍 Consultando...");
     const installations = await getAllInstallationsWithBatteryStatus();
     await sendLongMessage(msg.chat.id, formatBatteryReport(installations));
@@ -812,6 +920,7 @@ bot.on("message", async (msg) => {
   }
 
   if (msg.text === "📡 Listar Instalaciones") {
+    await logAuthorizedAccess(msg, "boton_listar");
     await bot.sendMessage(msg.chat.id, "📡 Obteniendo lista...");
     const installations = await getInstallations();
     const lines = [`📡 Instalaciones: ${installations.length}`];
@@ -820,6 +929,7 @@ bot.on("message", async (msg) => {
   }
 
   if (msg.text === "ℹ️ Estado del Bot") {
+    await logAuthorizedAccess(msg, "boton_estado");
     await bot.sendMessage(
       msg.chat.id,
       `🟢 Bot activo\nCron: ${CRON_TIME}\nUsuarios: ${authorizedChatIds.length}`
