@@ -13,7 +13,8 @@ dotenv.config();
 
 const {
   TELEGRAM_BOT_TOKEN,
-  TELEGRAM_CHAT_ID,
+  TELEGRAM_ADMIN_IDS,
+  TELEGRAM_ALLOWED_IDS,
   VRM_TOKEN,
   VRM_USER_ID,
   CRON_TIME = "0 8 * * *",
@@ -27,8 +28,30 @@ const TELEGRAM_MAX_LENGTH = 3900;
 
 const offlineThresholdMinutes = Number(OFFLINE_THRESHOLD_MINUTES);
 
+// Configuración de usuarios autorizados
+const ADMIN_IDS = TELEGRAM_ADMIN_IDS
+  ? TELEGRAM_ADMIN_IDS.split(',').map(id => String(id.trim()))
+  : [];
+
+const ALLOWED_IDS = TELEGRAM_ALLOWED_IDS
+  ? TELEGRAM_ALLOWED_IDS.split(',').map(id => String(id.trim()))
+  : [];
+
+const authorizedChatIds = [...ADMIN_IDS, ...ALLOWED_IDS];
+
+if (authorizedChatIds.length === 0) {
+  throw new Error("Debe configurar TELEGRAM_ADMIN_IDS o TELEGRAM_ALLOWED_IDS");
+}
+
+if (ADMIN_IDS.length === 0) {
+  console.warn("[WARN] No hay administradores configurados. Algunas funciones restringidas no estarán disponibles.");
+}
+
+console.log(`[BOT] Administradores: ${ADMIN_IDS.length}`);
+console.log(`[BOT] Usuarios autorizados: ${authorizedChatIds.length}`);
+
+// Validaciones obligatorias
 if (!TELEGRAM_BOT_TOKEN) throw new Error("Falta TELEGRAM_BOT_TOKEN");
-if (!TELEGRAM_CHAT_ID) throw new Error("Falta TELEGRAM_CHAT_ID");
 if (!VRM_TOKEN) throw new Error("Falta VRM_TOKEN");
 if (!VRM_USER_ID) throw new Error("Falta VRM_USER_ID");
 if (!Number.isFinite(offlineThresholdMinutes)) {
@@ -47,7 +70,11 @@ app.get("/health", (req, res) => {
   res.status(200).json({
     status: "ok",
     service: "victron-vrm-telegram-bot",
-    time: new Date().toISOString()
+    time: new Date().toISOString(),
+    stats: {
+      admins: ADMIN_IDS.length,
+      users: authorizedChatIds.length
+    }
   });
 });
 
@@ -68,56 +95,63 @@ const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, {
 console.log("[BOT] Bot de Telegram iniciado en modo polling");
 
 /**
- * =========================
  * Configurar comandos del bot (menú /)
- * =========================
  */
-
 async function setupBotCommands() {
   try {
     await bot.setMyCommands([
-      {
-        command: "start",
-        description: "🟢 Iniciar bot y mostrar menú principal"
-      },
-      {
-        command: "test",
-        description: "📴 Verificar instalaciones offline"
-      },
-      {
-        command: "soc",
-        description: "🔋 Consultar estado de carga de baterías (SoC)"
-      },
-      {
-        command: "listar",
-        description: "📡 Listar todas las instalaciones VRM"
-      },
-      {
-        command: "estado",
-        description: "ℹ️ Mostrar estado del bot y configuración"
-      }
+      { command: "start", description: "🟢 Iniciar bot y mostrar menú principal" },
+      { command: "test", description: "📴 Verificar instalaciones offline" },
+      { command: "soc", description: "🔋 Consultar estado de carga de baterías (SoC)" },
+      { command: "listar", description: "📡 Listar todas las instalaciones VRM" },
+      { command: "estado", description: "ℹ️ Mostrar estado del bot y configuración" },
+      { command: "usuarios", description: "👥 Listar usuarios autorizados (solo admin)" },
+      { command: "broadcast", description: "📢 Enviar mensaje a todos (solo admin)" }
     ]);
-    
     console.log("[BOT] Comandos del bot configurados correctamente");
   } catch (error) {
     console.error("[BOT] Error configurando comandos:", error.message);
   }
 }
-
-// Llamar a la función después de crear el bot
 setupBotCommands();
 
 /**
- * Comprueba si el mensaje viene del chat autorizado.
+ * Comprueba si el mensaje viene de un chat autorizado.
  */
 function isAuthorizedChat(msg) {
-  return String(msg.chat.id) === String(TELEGRAM_CHAT_ID);
+  return authorizedChatIds.includes(String(msg.chat.id));
+}
+
+/**
+ * Comprueba si el usuario es administrador.
+ */
+function isAdmin(msg) {
+  return ADMIN_IDS.includes(String(msg.chat.id));
+}
+
+/**
+ * Envía un mensaje a todos los usuarios autorizados.
+ */
+async function sendToAllAuthorized(text, options = {}) {
+  const results = [];
+  for (const chatId of authorizedChatIds) {
+    try {
+      await bot.sendMessage(chatId, text, options);
+      results.push({ chatId, success: true });
+      // Pequeña pausa para evitar rate limiting
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } catch (error) {
+      console.error(`[BOT] Error enviando a ${chatId}:`, error.message);
+      results.push({ chatId, success: false, error: error.message });
+    }
+  }
+  return results;
 }
 
 /**
  * Envía mensajes largos dividiéndolos en varios mensajes.
  */
-async function sendLongMessage(text) {
+async function sendLongMessage(chatId, text) {
   if (!text) return;
 
   const chunks = [];
@@ -139,7 +173,7 @@ async function sendLongMessage(text) {
   }
 
   for (const chunk of chunks) {
-    await bot.sendMessage(TELEGRAM_CHAT_ID, chunk, {
+    await bot.sendMessage(chatId, chunk, {
       parse_mode: "HTML",
       disable_web_page_preview: true
     });
@@ -229,10 +263,6 @@ async function getInstallationAlarms(idSite) {
 
 /**
  * Normaliza lastConnection.
- *
- * Puede venir como:
- * - Unix timestamp en segundos
- * - Unix timestamp en milisegundos
  */
 function normalizeTimestamp(lastConnection) {
   if (
@@ -312,12 +342,8 @@ function getInstallationId(installation) {
 
 /**
  * Determina si una instalación está online basado en sus dispositivos
- * @param {Object} installation - Objeto de instalación de VRM
- * @param {string} idSite - ID de la instalación
- * @returns {Promise<Object>} - { isOnline: boolean, status: string, lastConnection: Date|null }
  */
 async function getInstallationStatus(installation, idSite) {
-  // 1. Primero, intentar obtener estado desde la propia instalación
   const possibleStatus = 
     installation?.status ||
     installation?.state ||
@@ -330,7 +356,6 @@ async function getInstallationStatus(installation, idSite) {
     return { isOnline: true, status: "Online", lastConnection: null };
   }
   
-  // 2. Si no hay estado directo, consultar alarmas para obtener última conexión
   try {
     const alarms = await getInstallationAlarms(idSite);
     
@@ -344,7 +369,6 @@ async function getInstallationStatus(installation, idSite) {
       return { isOnline: false, status: "Sin dispositivos", lastConnection: null };
     }
     
-    // Buscar la última conexión entre todos los dispositivos
     let latestConnection = null;
     let onlineDevices = 0;
     
@@ -356,7 +380,6 @@ async function getInstallationStatus(installation, idSite) {
           latestConnection = lastConnectionDate;
         }
         
-        // Determinar si este dispositivo está online (última conexión hace menos de 15 minutos)
         const now = new Date();
         const diffMinutes = (now.getTime() - lastConnectionDate.getTime()) / 60000;
         if (diffMinutes < 15) {
@@ -369,7 +392,6 @@ async function getInstallationStatus(installation, idSite) {
       return { isOnline: false, status: "Sin conexión registrada", lastConnection: null };
     }
     
-    // Verificar si la última conexión fue hace menos del umbral configurado
     const now = new Date();
     const diffMinutes = (now.getTime() - latestConnection.getTime()) / 60000;
     const isOnline = diffMinutes < offlineThresholdMinutes;
@@ -540,11 +562,6 @@ function formatOfflineDevice(item) {
  * =========================
  */
 
-/**
- * Obtiene el último State of Charge (SoC) de una instalación
- * @param {string} idSite - ID de la instalación
- * @returns {Promise<Object>} - { soc: number|null, lastUpdated: Date|null, deviceName: string, rawValue: number }
- */
 async function getBatteryStatus(idSite) {
   console.log(`[VRM] Consultando SoC para instalación ${idSite}...`);
   
@@ -611,9 +628,6 @@ async function getBatteryStatus(idSite) {
   }
 }
 
-/**
- * Obtiene todas las instalaciones con su estado de batería
- */
 async function getAllInstallationsWithBatteryStatus() {
   const installations = await getInstallations();
   const results = [];
@@ -664,9 +678,6 @@ async function getAllInstallationsWithBatteryStatus() {
   return results;
 }
 
-/**
- * Obtiene el emoji según nivel de batería
- */
 function getBatteryEmoji(soc) {
   if (soc === null) return "❓";
   if (soc >= 80) return "🟢";
@@ -675,9 +686,6 @@ function getBatteryEmoji(soc) {
   return "🔴";
 }
 
-/**
- * Formatea una barra de batería visual
- */
 function formatBatteryBar(soc, width = 10) {
   if (soc === null) return "░░░░░░░░░░";
   const filled = Math.round((soc / 100) * width);
@@ -685,9 +693,6 @@ function formatBatteryBar(soc, width = 10) {
   return "█".repeat(filled) + "░".repeat(empty);
 }
 
-/**
- * Formatea el reporte de baterías para enviar a Telegram
- */
 function formatBatteryReport(installations) {
   const lines = [
     "🔋 <b>ESTADO DE BATERÍAS VRM</b>",
@@ -751,32 +756,67 @@ function formatBatteryReport(installations) {
 
 /**
  * =========================
- * Comandos del Bot
+ * Handlers de comandos
  * =========================
  */
 
-async function handleStatusCommand() {
-  await sendLongMessage(
+// /start
+bot.onText(/^\/start$/, async (msg) => {
+  if (!isAuthorizedChat(msg)) {
+    await bot.sendMessage(msg.chat.id, "❌ No estás autorizado para usar este bot.");
+    console.warn(`[SECURITY] Chat no autorizado: ${msg.chat.id}`);
+    return;
+  }
+
+  await bot.sendMessage(
+    msg.chat.id,
     [
-      "🟢 <b>Bot activo</b>",
+      "⚓ <b>AUTORIDAD PORTUARIA DE SANTA CRUZ DE TENERIFE</b>",
+      "<i>Sistemas de Ayudas a la Navegación</i>",
       "",
-      `Cron: <code>${escapeHtml(CRON_TIME)}</code>`,
-      `Zona horaria: <code>${escapeHtml(TIMEZONE)}</code>`,
-      `Umbral offline: <b>${offlineThresholdMinutes}</b> minutos`,
+      "━━━━━━━━━━━━━━━━━━━━━━",
       "",
-      "Comandos disponibles:",
-      "• /test - Verificar instalaciones offline",
-      "• /soc - Ver SoC de baterías",
-      "• /listar - Listar todas las instalaciones",
-      "• /estado - Estado del bot"
-    ].join("\n")
+      "🟢 <b>Estado del Sistema VRM</b>",
+      "",
+      "🗺️ <b>Instalaciones monitoreadas:</b>",
+      "• Sistemas de alimentación ininterrumpida",
+      "• Equipos de señalización marítima",
+      "• Estaciones de control de tráfico portuario",
+      "• Respaldo energético en faros y boyas",
+      "",
+      "📊 <b>Métricas en tiempo real:</b>",
+      "• 🔋 Estado de carga de baterías (SoC)",
+      "• ⚡ Consumo y generación energética",
+      "• 🌐 Estado de conectividad de equipos",
+      "• 🚨 Alertas automáticas de fallos",
+      "",
+      "━━━━━━━━━━━━━━━━━━━━━━",
+      "",
+      "🤖 <i>Bot desarrollado para supervisión remota",
+      "del sistema de gestión energética Victron VRM</i>",
+      "",
+      "<b>Selecciona una opción:</b>"
+    ].join("\n"),
+    {
+      parse_mode: "HTML",
+      reply_markup: {
+        keyboard: [
+          [{ text: "📴 Instalaciones Offline" }, { text: "🔋 Consultar SoC" }],
+          [{ text: "📡 Listar Instalaciones" }, { text: "ℹ️ Estado del Bot" }]
+        ],
+        resize_keyboard: true,
+        one_time_keyboard: false
+      }
+    }
   );
-}
+});
 
-async function handleTestCommand() {
-  console.log("[BOT] Ejecutando /test");
-
-  await sendLongMessage("🔎 Ejecutando comprobación manual de instalaciones VRM...");
+// /test
+bot.onText(/^\/test$/, async (msg) => {
+  if (!isAuthorizedChat(msg)) return;
+  
+  console.log(`[BOT] Usuario ${msg.chat.id} ejecutó /test`);
+  await bot.sendMessage(msg.chat.id, "🔎 Ejecutando comprobación manual de instalaciones VRM...");
 
   try {
     const result = await checkOfflineInstallations();
@@ -810,25 +850,26 @@ async function handleTestCommand() {
       }
     }
 
-    await sendLongMessage(lines.join("\n"));
+    await sendLongMessage(msg.chat.id, lines.join("\n"));
   } catch (error) {
     console.error("[BOT] Error en /test:", error.message);
-    await sendLongMessage(
-      `❌ Error ejecutando comprobación manual:\n<code>${escapeHtml(error.message)}</code>`
-    );
+    await bot.sendMessage(msg.chat.id, `❌ Error: ${error.message}`);
   }
-}
+});
 
-async function handleListCommand() {
-  console.log("[BOT] Ejecutando /listar");
+// /listar
+bot.onText(/^\/listar$/, async (msg) => {
+  if (!isAuthorizedChat(msg)) return;
+  
+  console.log(`[BOT] Usuario ${msg.chat.id} ejecutó /listar`);
 
   try {
-    await sendLongMessage("📡 Obteniendo lista de instalaciones...");
+    await bot.sendMessage(msg.chat.id, "📡 Obteniendo lista de instalaciones...");
     
     const installations = await getInstallations();
 
     if (!installations.length) {
-      await sendLongMessage("No se encontraron instalaciones para este usuario.");
+      await bot.sendMessage(msg.chat.id, "No se encontraron instalaciones para este usuario.");
       return;
     }
 
@@ -874,38 +915,155 @@ async function handleListCommand() {
     lines.push("━━━━━━━━━━━━━━━━━━━━━━");
     lines.push("🟢 Online  🔴 Offline");
     
-    await sendLongMessage(lines.join("\n"));
+    await sendLongMessage(msg.chat.id, lines.join("\n"));
   } catch (error) {
     console.error("[BOT] Error en /listar:", error.message);
-    await sendLongMessage(
-      `❌ Error listando instalaciones:\n<code>${escapeHtml(error.message)}</code>`
-    );
+    await bot.sendMessage(msg.chat.id, `❌ Error: ${error.message}`);
   }
-}
+});
 
-async function handleSocCommand() {
-  console.log("[BOT] Ejecutando /soc");
+// /soc
+bot.onText(/^\/soc$/, async (msg) => {
+  if (!isAuthorizedChat(msg)) return;
   
-  await sendLongMessage("🔍 Consultando estado de baterías de todas las instalaciones...");
+  console.log(`[BOT] Usuario ${msg.chat.id} ejecutó /soc`);
+  await bot.sendMessage(msg.chat.id, "🔍 Consultando estado de baterías...");
   
   try {
     const installations = await getAllInstallationsWithBatteryStatus();
     
     if (installations.length === 0) {
-      await sendLongMessage("❌ No se encontraron instalaciones para consultar.");
+      await bot.sendMessage(msg.chat.id, "❌ No se encontraron instalaciones.");
       return;
     }
     
     const report = formatBatteryReport(installations);
-    await sendLongMessage(report);
+    await sendLongMessage(msg.chat.id, report);
     
   } catch (error) {
     console.error("[BOT] Error en /soc:", error.message);
-    await sendLongMessage(
-      `❌ Error consultando estado de baterías:\n<code>${escapeHtml(error.message)}</code>`
-    );
+    await bot.sendMessage(msg.chat.id, `❌ Error: ${error.message}`);
   }
-}
+});
+
+// /estado
+bot.onText(/^\/estado$/, async (msg) => {
+  if (!isAuthorizedChat(msg)) return;
+  
+  await sendLongMessage(
+    msg.chat.id,
+    [
+      "🟢 <b>Bot activo</b>",
+      "",
+      `Cron: <code>${escapeHtml(CRON_TIME)}</code>`,
+      `Zona horaria: <code>${escapeHtml(TIMEZONE)}</code>`,
+      `Umbral offline: <b>${offlineThresholdMinutes}</b> minutos`,
+      "",
+      "👥 <b>Usuarios autorizados:</b>",
+      `• Administradores: ${ADMIN_IDS.length}`,
+      `• Total usuarios: ${authorizedChatIds.length}`,
+      "",
+      "Comandos disponibles:",
+      "• /test - Verificar instalaciones offline",
+      "• /soc - Ver SoC de baterías",
+      "• /listar - Listar instalaciones",
+      "• /estado - Estado del bot",
+      "• /usuarios - Listar usuarios (admin)",
+      "• /broadcast - Mensaje masivo (admin)"
+    ].join("\n")
+  );
+});
+
+// /usuarios (solo admin)
+bot.onText(/^\/usuarios$/, async (msg) => {
+  if (!isAuthorizedChat(msg)) return;
+  if (!isAdmin(msg)) {
+    await bot.sendMessage(msg.chat.id, "❌ Solo administradores pueden ver la lista de usuarios.");
+    return;
+  }
+  
+  const lines = [
+    "👥 <b>USUARIOS AUTORIZADOS</b>",
+    "",
+    `👑 <b>Administradores (${ADMIN_IDS.length}):</b>`
+  ];
+  
+  ADMIN_IDS.forEach(id => lines.push(`• <code>${id}</code>`));
+  
+  lines.push("");
+  lines.push(`📋 <b>Usuarios (${ALLOWED_IDS.length}):</b>`);
+  ALLOWED_IDS.forEach(id => lines.push(`• <code>${id}</code>`));
+  
+  lines.push("");
+  lines.push(`Total: <b>${authorizedChatIds.length}</b> usuarios`);
+  
+  await bot.sendMessage(msg.chat.id, lines.join("\n"), { parse_mode: "HTML" });
+});
+
+// /broadcast (solo admin)
+bot.onText(/^\/broadcast (.+)$/, async (msg, match) => {
+  if (!isAuthorizedChat(msg)) return;
+  if (!isAdmin(msg)) {
+    await bot.sendMessage(msg.chat.id, "❌ Solo administradores pueden usar /broadcast");
+    return;
+  }
+  
+  const message = match[1];
+  const adminName = msg.from?.first_name || msg.from?.username || msg.chat.id;
+  
+  console.log(`[BOT] Admin ${adminName} envió broadcast: ${message.substring(0, 50)}...`);
+  
+  await bot.sendMessage(msg.chat.id, "📢 Enviando mensaje a todos los usuarios...");
+  
+  const results = await sendToAllAuthorized(
+    `📢 <b>MENSAJE DEL ADMINISTRADOR</b>\n\n${message}`,
+    { parse_mode: "HTML" }
+  );
+  
+  const successCount = results.filter(r => r.success).length;
+  await bot.sendMessage(
+    msg.chat.id,
+    `✅ Mensaje enviado a ${successCount}/${authorizedChatIds.length} usuarios`
+  );
+});
+
+// Mensajes de texto (botones)
+bot.on("message", async (msg) => {
+  if (!msg.text) return;
+  if (!isAuthorizedChat(msg)) return;
+
+  if (msg.text === "📴 Instalaciones Offline") {
+    await bot.sendMessage(msg.chat.id, "🔎 Ejecutando comprobación...");
+    const result = await checkOfflineInstallations();
+    const lines = [`📋 Instalaciones offline: ${result.offlineDevices.length}`];
+    await bot.sendMessage(msg.chat.id, lines.join("\n"));
+    return;
+  }
+
+  if (msg.text === "🔋 Consultar SoC") {
+    await bot.sendMessage(msg.chat.id, "🔍 Consultando...");
+    const installations = await getAllInstallationsWithBatteryStatus();
+    const report = formatBatteryReport(installations);
+    await sendLongMessage(msg.chat.id, report);
+    return;
+  }
+
+  if (msg.text === "📡 Listar Instalaciones") {
+    await bot.sendMessage(msg.chat.id, "📡 Obteniendo lista...");
+    const installations = await getInstallations();
+    const lines = [`📡 Instalaciones: ${installations.length}`];
+    await bot.sendMessage(msg.chat.id, lines.join("\n"));
+    return;
+  }
+
+  if (msg.text === "ℹ️ Estado del Bot") {
+    await bot.sendMessage(
+      msg.chat.id,
+      `🟢 Bot activo\nCron: ${CRON_TIME}\nUsuarios: ${authorizedChatIds.length}`
+    );
+    return;
+  }
+});
 
 /**
  * =========================
@@ -937,11 +1095,10 @@ async function runDailyCheck() {
       lines.push("");
     }
 
-    await sendLongMessage(lines.join("\n"));
+    await sendToAllAuthorized(lines.join("\n"));
   } catch (error) {
     console.error("[CRON] Error en comprobación automática:", error.message);
-
-    await sendLongMessage(
+    await sendToAllAuthorized(
       `❌ Error en comprobación automática VRM:\n<code>${escapeHtml(error.message)}</code>`
     );
   }
@@ -963,131 +1120,9 @@ console.log(`[CRON] Programado con CRON_TIME="${CRON_TIME}" y TIMEZONE="${TIMEZO
 
 /**
  * =========================
- * Handlers Telegram
+ * Manejo de errores
  * =========================
  */
-
-bot.onText(/^\/start$/, async (msg) => {
-  if (!isAuthorizedChat(msg)) {
-    console.warn(`[SECURITY] Chat no autorizado ignorado: ${msg.chat.id}`);
-    return;
-  }
-
-  await bot.sendMessage(
-    TELEGRAM_CHAT_ID,
-    [
-      "⚓ <b>AUTORIDAD PORTUARIA DE SANTA CRUZ DE TENERIFE</b>",
-      "<i>Sistemas de Ayudas a la Navegación</i>",
-      "",
-      "━━━━━━━━━━━━━━━━━━━━━━",
-      "",
-      "🟢 <b>Estado del Sistema VRM</b>",
-      "",
-      "🗺️ <b>Instalaciones monitoreadas:</b>",
-      "• Sistemas de alimentación ininterrumpida",
-      "• Equipos de señalización marítima",
-      "• Estaciones de control de tráfico portuario",
-      "• Respaldo energético en faros y boyas",
-      "",
-      "📊 <b>Métricas en tiempo real:</b>",
-      "• 🔋 Estado de carga de baterías (SoC)",
-      "• ⚡ Consumo y generación energética",
-      "• 🌐 Estado de conectividad de equipos",
-      "• 🚨 Alertas automáticas de fallos",
-      "",
-      "━━━━━━━━━━━━━━━━━━━━━━",
-      "",
-      "🤖 <i>Bot desarrollado para supervisión remota",
-      "del sistema de gestión energética Victron VRM</i>",
-      "",
-      "<b>Selecciona una opción:</b>"
-    ].join("\n"),
-    {
-      parse_mode: "HTML",
-      reply_markup: {
-        keyboard: [
-          [{ text: "📴 Instalaciones Offline" }, { text: "🔋 Consultar SoC" }],
-          [{ text: "📡 Listar Instalaciones" }, { text: "ℹ️ Estado del Bot" }]
-        ],
-        resize_keyboard: true,
-        one_time_keyboard: false
-      }
-    }
-  );
-});
-
-bot.onText(/^\/test$/, async (msg) => {
-  if (!isAuthorizedChat(msg)) {
-    console.warn(`[SECURITY] Chat no autorizado ignorado: ${msg.chat.id}`);
-    return;
-  }
-
-  await handleTestCommand();
-});
-
-bot.onText(/^\/listar$/, async (msg) => {
-  if (!isAuthorizedChat(msg)) {
-    console.warn(`[SECURITY] Chat no autorizado ignorado: ${msg.chat.id}`);
-    return;
-  }
-
-  await handleListCommand();
-});
-
-bot.onText(/^\/estado$/, async (msg) => {
-  if (!isAuthorizedChat(msg)) {
-    console.warn(`[SECURITY] Chat no autorizado ignorado: ${msg.chat.id}`);
-    return;
-  }
-
-  await handleStatusCommand();
-});
-
-bot.onText(/^\/soc$/, async (msg) => {
-  if (!isAuthorizedChat(msg)) {
-    console.warn(`[SECURITY] Chat no autorizado ignorado: ${msg.chat.id}`);
-    return;
-  }
-
-  await handleSocCommand();
-});
-
-bot.on("message", async (msg) => {
-  if (!msg.text) return;
-
-  if (!isAuthorizedChat(msg)) {
-    console.warn(`[SECURITY] Mensaje de chat no autorizado ignorado: ${msg.chat.id}`);
-    return;
-  }
-
-  if (msg.text === "📴 Instalaciones Offline") {
-    await handleTestCommand();
-    return;
-  }
-
-  if (msg.text === "🔋 Consultar SoC") {
-    await handleSocCommand();
-    return;
-  }
-
-  if (msg.text === "📡 Listar Instalaciones") {
-    await handleListCommand();
-    return;
-  }
-
-  if (msg.text === "ℹ️ Estado del Bot") {
-    await handleStatusCommand();
-    return;
-  }
-
-  const knownCommands = ["/start", "/test", "/soc", "/listar", "/estado"];
-
-  if (msg.text.startsWith("/") && !knownCommands.includes(msg.text.trim())) {
-    await sendLongMessage(
-      "❓ Comando no reconocido.\n\nUsa los botones del menú o comandos:\n/test, /soc, /listar o /estado."
-    );
-  }
-});
 
 bot.on("polling_error", (error) => {
   console.error("[BOT] Polling error:", error.message);
