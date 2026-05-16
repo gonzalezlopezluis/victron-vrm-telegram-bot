@@ -147,7 +147,7 @@ async function logUnauthorizedAttempt(msg, action = "desconocida") {
   const fullName = [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(" ") || "sin nombre";
   const text = msg.text || msg.caption || "[sin texto]";
   const timestamp = new Date().toISOString();
-  
+
   // Log detallado en consola (visible en Render Logs)
   console.warn(`╔══════════════════════════════════════════════════════════════╗`);
   console.warn(`║ [SECURITY] INTENTO NO AUTORIZADO                               ║`);
@@ -159,7 +159,7 @@ async function logUnauthorizedAttempt(msg, action = "desconocida") {
   console.warn(`║ 💬 Mensaje: ${text.substring(0, 150)}`);
   console.warn(`║ 🕐 Hora: ${timestamp}`);
   console.warn(`╚══════════════════════════════════════════════════════════════╝`);
-  
+
   // Notificar a administradores (opcional)
   if (NOTIFY_UNAUTHORIZED === "true" && ADMIN_IDS.length > 0) {
     for (const adminId of ADMIN_IDS) {
@@ -188,11 +188,11 @@ async function logUnauthorizedAttempt(msg, action = "desconocida") {
  */
 async function logAuthorizedAccess(msg, action = "desconocida") {
   if (LOG_AUTHORIZED !== "true") return;
-  
+
   const userId = msg.chat.id;
   const username = msg.from?.username || msg.from?.first_name || "sin username";
   const text = msg.text || "[sin texto]";
-  
+
   console.log(`[AUDIT] Acceso autorizado - Usuario: ${userId} (@${username}) - Acción: ${action} - Mensaje: "${text.substring(0, 100)}"`);
 }
 
@@ -297,7 +297,7 @@ async function getInstallations() {
         : [];
 
   console.log(`[VRM] Instalaciones encontradas: ${installations.length}`);
-  
+
   const installationsWithStatus = [];
   for (const installation of installations) {
     const idSite = getInstallationId(installation);
@@ -311,7 +311,7 @@ async function getInstallations() {
       installationsWithStatus.push(installation);
     }
   }
-  
+
   return installationsWithStatus;
 }
 
@@ -381,22 +381,22 @@ function getInstallationId(installation) {
  */
 async function getInstallationStatus(installation, idSite) {
   const possibleStatus = installation?.status || installation?.state || installation?.connectionState || installation?.isOnline;
-  
+
   if (possibleStatus === true) return { isOnline: true, status: "Online", lastConnection: null };
   if (possibleStatus === false) return { isOnline: false, status: "Offline", lastConnection: null };
   if (typeof possibleStatus === "string" && possibleStatus.toLowerCase() === "online") {
     return { isOnline: true, status: "Online", lastConnection: null };
   }
-  
+
   try {
     const alarms = await getInstallationAlarms(idSite);
     const devices = Array.isArray(alarms?.devices) ? alarms.devices : Array.isArray(alarms?.records?.devices) ? alarms.records.devices : [];
-    
+
     if (devices.length === 0) return { isOnline: false, status: "Sin dispositivos", lastConnection: null };
-    
+
     let latestConnection = null;
     let onlineDevices = 0;
-    
+
     for (const device of devices) {
       const lastConnectionDate = normalizeTimestamp(device?.lastConnection);
       if (lastConnectionDate) {
@@ -405,12 +405,12 @@ async function getInstallationStatus(installation, idSite) {
         if (diffMinutes < 15) onlineDevices++;
       }
     }
-    
+
     if (!latestConnection) return { isOnline: false, status: "Sin conexión registrada", lastConnection: null };
-    
+
     const diffMinutes = (new Date().getTime() - latestConnection.getTime()) / 60000;
     const isOnline = diffMinutes < offlineThresholdMinutes;
-    
+
     let statusText = "";
     if (isOnline) {
       statusText = onlineDevices > 0 ? `Online (${onlineDevices} disp. activos)` : "Online";
@@ -419,7 +419,7 @@ async function getInstallationStatus(installation, idSite) {
       const minutesOffline = Math.floor(diffMinutes % 60);
       statusText = hoursOffline > 0 ? `Offline (${hoursOffline}h ${minutesOffline}m)` : `Offline (${minutesOffline}m)`;
     }
-    
+
     return { isOnline, status: statusText, lastConnection: latestConnection };
   } catch (error) {
     console.error(`[ERROR] Error obteniendo estado para ${idSite}:`, error.message);
@@ -519,27 +519,27 @@ function formatOfflineDevice(item) {
 
 async function getBatteryStatus(idSite) {
   console.log(`[VRM] Consultando SoC para instalación ${idSite}...`);
-  
+
   try {
     const data = await vrmFetch(`/installations/${encodeURIComponent(idSite)}/stats?bs=1`);
-    
+
     if (!data?.success || !data?.records?.bs) {
       return { soc: null, lastUpdated: null, deviceName: "N/A", error: "Respuesta API inválida" };
     }
-    
+
     const bsRecords = data.records.bs;
     if (!Array.isArray(bsRecords) || bsRecords.length === 0) {
       return { soc: null, lastUpdated: null, deviceName: "N/A", error: "Sin datos de batería" };
     }
-    
+
     const lastRecord = bsRecords[bsRecords.length - 1];
     const timestamp = lastRecord[0];
     const socValue = lastRecord[1];
-    
+
     if (!timestamp || socValue === undefined) {
       return { soc: null, lastUpdated: null, deviceName: "N/A", error: "Datos incompletos" };
     }
-    
+
     return {
       soc: Math.round(socValue),
       lastUpdated: new Date(timestamp),
@@ -555,17 +555,17 @@ async function getBatteryStatus(idSite) {
 async function getAllInstallationsWithBatteryStatus() {
   const installations = await getInstallations();
   const results = [];
-  
+
   for (const installation of installations) {
     const idSite = getInstallationId(installation);
     const installationName = getInstallationName(installation);
     const statusInfo = installation._statusInfo || { status: "Desconocido" };
-    
+
     if (!idSite) {
       results.push({ idSite: null, name: installationName, status: statusInfo.status, battery: null, error: "Sin ID de instalación" });
       continue;
     }
-    
+
     try {
       const batteryStatus = await getBatteryStatus(idSite);
       results.push({
@@ -602,17 +602,17 @@ function formatBatteryReport(installations) {
     `📊 <i>Reporte generado: ${new Date().toLocaleString("es-ES", { timeZone: TIMEZONE })}</i>`,
     ""
   ];
-  
+
   let validReadings = 0, totalSoc = 0, warnings = 0;
-  
+
   for (const inst of installations) {
     const emoji = getBatteryEmoji(inst.battery);
     const statusEmoji = inst.isOnline ? "🟢" : "🔴";
-    
+
     lines.push(`${emoji} <b>${escapeHtml(inst.name)}</b>`);
     lines.push(`└ 📍 ID: <code>${escapeHtml(String(inst.idSite))}</code>`);
     lines.push(`└ 📡 Estado: ${statusEmoji} ${escapeHtml(String(inst.status))}`);
-    
+
     if (inst.battery !== null && !isNaN(inst.battery)) {
       lines.push(`└ 🔋 SoC: <b>${inst.battery}%</b> ${formatBatteryBar(inst.battery)}`);
       if (inst.lastUpdated) {
@@ -631,7 +631,7 @@ function formatBatteryReport(installations) {
     }
     lines.push("");
   }
-  
+
   if (validReadings > 0) {
     const avgSoc = Math.round(totalSoc / validReadings);
     const avgEmoji = getBatteryEmoji(avgSoc);
@@ -656,7 +656,7 @@ bot.onText(/^\/start$/, async (msg) => {
     await bot.sendMessage(msg.chat.id, "❌ No estás autorizado para usar este bot.\n\nContacta con el administrador para solicitar acceso.");
     return;
   }
-  
+
   await logAuthorizedAccess(msg, "/start");
 
   await bot.sendMessage(
@@ -708,10 +708,10 @@ bot.onText(/^\/test$/, async (msg) => {
     await logUnauthorizedAttempt(msg, "/test");
     return;
   }
-  
+
   await logAuthorizedAccess(msg, "/test");
   await bot.sendMessage(msg.chat.id, "🔎 Ejecutando comprobación manual de instalaciones VRM...");
-  
+
   try {
     const result = await checkOfflineInstallations();
     const lines = [
@@ -746,10 +746,10 @@ bot.onText(/^\/listar$/, async (msg) => {
     await logUnauthorizedAttempt(msg, "/listar");
     return;
   }
-  
+
   await logAuthorizedAccess(msg, "/listar");
   await bot.sendMessage(msg.chat.id, "📡 Obteniendo lista de instalaciones...");
-  
+
   try {
     const installations = await getInstallations();
     if (!installations.length) {
@@ -791,10 +791,10 @@ bot.onText(/^\/soc$/, async (msg) => {
     await logUnauthorizedAttempt(msg, "/soc");
     return;
   }
-  
+
   await logAuthorizedAccess(msg, "/soc");
   await bot.sendMessage(msg.chat.id, "🔍 Consultando estado de baterías...");
-  
+
   try {
     const installations = await getAllInstallationsWithBatteryStatus();
     if (installations.length === 0) {
@@ -813,9 +813,9 @@ bot.onText(/^\/estado$/, async (msg) => {
     await logUnauthorizedAttempt(msg, "/estado");
     return;
   }
-  
+
   await logAuthorizedAccess(msg, "/estado");
-  
+
   await sendLongMessage(
     msg.chat.id,
     [
@@ -843,14 +843,14 @@ bot.onText(/^\/usuarios$/, async (msg) => {
     await logUnauthorizedAttempt(msg, "/usuarios");
     return;
   }
-  
+
   if (!isAdmin(msg)) {
     await bot.sendMessage(msg.chat.id, "❌ Solo administradores pueden ver la lista de usuarios.");
     return;
   }
-  
+
   await logAuthorizedAccess(msg, "/usuarios");
-  
+
   const lines = [
     "👥 <b>USUARIOS AUTORIZADOS</b>", "",
     `👑 <b>Administradores (${ADMIN_IDS.length}):</b>`
@@ -859,7 +859,7 @@ bot.onText(/^\/usuarios$/, async (msg) => {
   lines.push("", `📋 <b>Usuarios (${ALLOWED_IDS.length}):</b>`);
   ALLOWED_IDS.forEach(id => lines.push(`• <code>${id}</code>`));
   lines.push("", `Total: <b>${authorizedChatIds.length}</b> usuarios`);
-  
+
   await bot.sendMessage(msg.chat.id, lines.join("\n"), { parse_mode: "HTML" });
 });
 
@@ -869,19 +869,19 @@ bot.onText(/^\/broadcast (.+)$/, async (msg, match) => {
     await logUnauthorizedAttempt(msg, "/broadcast");
     return;
   }
-  
+
   if (!isAdmin(msg)) {
     await bot.sendMessage(msg.chat.id, "❌ Solo administradores pueden usar /broadcast");
     return;
   }
-  
+
   const message = match[1];
   const adminName = msg.from?.first_name || msg.from?.username || msg.chat.id;
   console.log(`[BOT] Admin ${adminName} envió broadcast`);
-  
+
   await logAuthorizedAccess(msg, "/broadcast");
   await bot.sendMessage(msg.chat.id, "📢 Enviando mensaje a todos los usuarios...");
-  
+
   const results = await sendToAllAuthorized(`📢 <b>MENSAJE DEL ADMINISTRADOR</b>\n\n${message}`, { parse_mode: "HTML" });
   const successCount = results.filter(r => r.success).length;
   await bot.sendMessage(msg.chat.id, `✅ Mensaje enviado a ${successCount}/${authorizedChatIds.length} usuarios`);
@@ -895,7 +895,7 @@ bot.onText(/^\/broadcast (.+)$/, async (msg, match) => {
 
 bot.on("message", async (msg) => {
   if (!msg.text) return;
-  
+
   if (!isAuthorizedChat(msg)) {
     await logUnauthorizedAttempt(msg, "mensaje_general");
     return;
@@ -906,8 +906,22 @@ bot.on("message", async (msg) => {
     await logAuthorizedAccess(msg, "boton_offline");
     await bot.sendMessage(msg.chat.id, "🔎 Ejecutando comprobación...");
     const result = await checkOfflineInstallations();
-    const lines = [`📋 Instalaciones offline: ${result.offlineDevices.length}`];
-    await bot.sendMessage(msg.chat.id, lines.join("\n"));
+
+    // Formatear mensaje con HTML
+    let message = `📋 <b>Instalaciones offline</b>: ${result.offlineDevices.length}`;
+
+    if (result.offlineDevices.length > 0) {
+      message += `\n\n🚨 <b>Instalaciones afectadas:</b>\n`;
+      for (const item of result.offlineDevices) {
+        message += `\n• ${escapeHtml(item.installationName)}`;
+        message += `\n  └ 📍 ID: <code>${escapeHtml(String(item.idSite))}</code>`;
+        message += `\n  └ ⏱️ Desconectado: ${item.elapsed}`;
+      }
+    } else {
+      message += `\n\n✅ <i>Todas las instalaciones están online</i>`;
+    }
+
+    await bot.sendMessage(msg.chat.id, message, { parse_mode: "HTML" });
     return;
   }
 
@@ -921,10 +935,17 @@ bot.on("message", async (msg) => {
 
   if (msg.text === "📡 Listar Instalaciones") {
     await logAuthorizedAccess(msg, "boton_listar");
-    await bot.sendMessage(msg.chat.id, "📡 Obteniendo lista...");
+    await bot.sendMessage(msg.chat.id, "📡 Obteniendo lista...", { parse_mode: "HTML" });
+
+    // Usar sendLongMessage que ya tiene parse_mode: "HTML"
     const installations = await getInstallations();
-    const lines = [`📡 Instalaciones: ${installations.length}`];
-    await bot.sendMessage(msg.chat.id, lines.join("\n"));
+    if (!installations.length) {
+      await bot.sendMessage(msg.chat.id, "❌ No se encontraron instalaciones.", { parse_mode: "HTML" });
+      return;
+    }
+
+    const lines = ["📡 <b>INSTALACIONES VRM MONITORIZADAS</b>", "", `Total: <b>${installations.length}</b>`];
+    await sendLongMessage(msg.chat.id, lines.join("\n"));
     return;
   }
 
@@ -932,14 +953,19 @@ bot.on("message", async (msg) => {
     await logAuthorizedAccess(msg, "boton_estado");
     await bot.sendMessage(
       msg.chat.id,
-      `🟢 Bot activo\nCron: ${CRON_TIME}\nUsuarios: ${authorizedChatIds.length}`
+      `🟢 <b>Bot activo</b>\n\n` +
+      `⏰ Cron: <code>${escapeHtml(CRON_TIME)}</code>\n` +
+      `🌍 Zona: <code>${escapeHtml(TIMEZONE)}</code>\n` +
+      `⚠️ Umbral offline: <b>${offlineThresholdMinutes}</b> minutos\n\n` +
+      `👥 <b>Usuarios autorizados:</b> ${authorizedChatIds.length}`,
+      { parse_mode: "HTML" }
     );
     return;
   }
 
   // Comandos no reconocidos
   const validCommands = ["/start", "/test", "/soc", "/listar", "/estado", "/usuarios", "/broadcast"];
-  
+
   if (msg.text.startsWith("/")) {
     const command = msg.text.split(" ")[0].toLowerCase();
     if (!validCommands.includes(command)) {
