@@ -904,24 +904,51 @@ bot.on("message", async (msg) => {
   // Botones del menú
   if (msg.text === "📴 Instalaciones Offline") {
     await logAuthorizedAccess(msg, "boton_offline");
-    await bot.sendMessage(msg.chat.id, "🔎 Ejecutando comprobación...");
-    const result = await checkOfflineInstallations();
+    await bot.sendMessage(msg.chat.id, "🔎 Ejecutando comprobación...", { parse_mode: "HTML" });
 
-    // Formatear mensaje con HTML
-    let message = `📋 <b>Instalaciones offline</b>: ${result.offlineDevices.length}`;
+    try {
+      const result = await checkOfflineInstallations();
 
-    if (result.offlineDevices.length > 0) {
-      message += `\n\n🚨 <b>Instalaciones afectadas:</b>\n`;
-      for (const item of result.offlineDevices) {
-        message += `\n• ${escapeHtml(item.installationName)}`;
-        message += `\n  └ 📍 ID: <code>${escapeHtml(String(item.idSite))}</code>`;
-        message += `\n  └ ⏱️ Desconectado: ${item.elapsed}`;
+      if (result.offlineDevices.length === 0) {
+        await bot.sendMessage(
+          msg.chat.id,
+          "✅ <b>Todas las instalaciones están online</b>\n\nNo se detectaron incidencias.",
+          { parse_mode: "HTML" }
+        );
+        return;
       }
-    } else {
-      message += `\n\n✅ <i>Todas las instalaciones están online</i>`;
-    }
 
-    await bot.sendMessage(msg.chat.id, message, { parse_mode: "HTML" });
+      // Construir mensaje detallado
+      const lines = [
+        "🚨 <b>INSTALACIONES OFFLINE DETECTADAS</b>",
+        "",
+        `📊 Total: <b>${result.offlineDevices.length}</b> instalación(es)`,
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        ""
+      ];
+
+      for (const item of result.offlineDevices) {
+        lines.push(`📌 <b>${escapeHtml(item.installationName)}</b>`);
+        lines.push(`└ 📍 ID: <code>${escapeHtml(String(item.idSite))}</code>`);
+        lines.push(`└ 🔌 Último dispositivo: ${escapeHtml(String(item.deviceName))}`);
+        lines.push(`└ ⏱️ Tiempo offline: <b>${item.elapsed}</b>`);
+        lines.push(`└ 🕐 Última conexión: ${item.lastConnection.toLocaleString("es-ES", { timeZone: TIMEZONE })}`);
+        lines.push(`└ 📡 Dispositivos: ${item.validConnections}/${item.totalDevices}`);
+        lines.push("");
+      }
+
+      if (result.warnings.length > 0) {
+        lines.push("⚠️ <b>Advertencias:</b>");
+        for (const warning of result.warnings) {
+          lines.push(`• ${escapeHtml(warning)}`);
+        }
+      }
+
+      await sendLongMessage(msg.chat.id, lines.join("\n"));
+
+    } catch (error) {
+      await bot.sendMessage(msg.chat.id, `❌ Error: ${error.message}`, { parse_mode: "HTML" });
+    }
     return;
   }
 
@@ -935,17 +962,62 @@ bot.on("message", async (msg) => {
 
   if (msg.text === "📡 Listar Instalaciones") {
     await logAuthorizedAccess(msg, "boton_listar");
-    await bot.sendMessage(msg.chat.id, "📡 Obteniendo lista...", { parse_mode: "HTML" });
+    await bot.sendMessage(msg.chat.id, "📡 Obteniendo lista de instalaciones...", { parse_mode: "HTML" });
 
-    // Usar sendLongMessage que ya tiene parse_mode: "HTML"
-    const installations = await getInstallations();
-    if (!installations.length) {
-      await bot.sendMessage(msg.chat.id, "❌ No se encontraron instalaciones.", { parse_mode: "HTML" });
-      return;
+    try {
+      const installations = await getInstallations();
+
+      if (!installations.length) {
+        await bot.sendMessage(msg.chat.id, "❌ No se encontraron instalaciones.", { parse_mode: "HTML" });
+        return;
+      }
+
+      const lines = [
+        "📡 <b>INSTALACIONES VRM MONITORIZADAS</b>",
+        "",
+        `Total: <b>${installations.length}</b>`,
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        ""
+      ];
+
+      for (const installation of installations) {
+        const name = getInstallationName(installation);
+        const idSite = getInstallationId(installation);
+        let statusText = "";
+        let statusEmoji = "";
+        let lastConnectionInfo = "";
+
+        if (installation._statusInfo) {
+          const info = installation._statusInfo;
+          statusEmoji = info.isOnline ? "🟢" : "🔴";
+          statusText = info.status;
+
+          if (info.lastConnection) {
+            const timeAgo = Math.floor((Date.now() - info.lastConnection.getTime()) / 60000);
+            const timeText = timeAgo < 1 ? "hace momentos" :
+              timeAgo === 1 ? "hace 1 minuto" :
+                `hace ${timeAgo} minutos`;
+            lastConnectionInfo = `\n└ 🕐 Última conexión: ${timeText}`;
+          }
+        } else {
+          statusEmoji = "⚫";
+          statusText = "No disponible";
+        }
+
+        lines.push(`${statusEmoji} <b>${escapeHtml(name)}</b>`);
+        lines.push(`└ 📍 ID: <code>${escapeHtml(String(idSite ?? "sin idSite"))}</code>`);
+        lines.push(`└ 📡 Estado: ${escapeHtml(String(statusText))}${lastConnectionInfo}`);
+        lines.push("");
+      }
+
+      lines.push("━━━━━━━━━━━━━━━━━━━━━━");
+      lines.push("🟢 Online  🔴 Offline  ⚠️ Revisar");
+
+      await sendLongMessage(msg.chat.id, lines.join("\n"));
+
+    } catch (error) {
+      await bot.sendMessage(msg.chat.id, `❌ Error: ${error.message}`, { parse_mode: "HTML" });
     }
-
-    const lines = ["📡 <b>INSTALACIONES VRM MONITORIZADAS</b>", "", `Total: <b>${installations.length}</b>`];
-    await sendLongMessage(msg.chat.id, lines.join("\n"));
     return;
   }
 
