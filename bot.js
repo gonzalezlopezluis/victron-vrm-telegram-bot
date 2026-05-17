@@ -1071,18 +1071,37 @@ async function runDailyCheck() {
       console.log("[CRON] Sin incidencias offline");
       return;
     }
+    
+    // Construir mensaje detallado
     const lines = [
-      "🚨 <b>Alerta automática VRM</b>", "",
-      `Se han detectado ${result.offlineDevices.length} instalación(es) offline.`,
-      `Umbral configurado: ${offlineThresholdMinutes} minutos`, ""
+      "🚨 <b>ALERTA AUTOMÁTICA VRM</b>",
+      "",
+      `📊 Se han detectado <b>${result.offlineDevices.length}</b> instalación(es) offline.`,
+      `⚠️ Umbral configurado: <b>${offlineThresholdMinutes}</b> minutos`,
+      "",
+      "━━━━━━━━━━━━━━━━━━━━━━",
+      ""
     ];
+    
     for (const item of result.offlineDevices) {
-      lines.push(formatOfflineDevice(item), "");
+      lines.push(`📌 <b>${escapeHtml(item.installationName)}</b>`);
+      lines.push(`└ 📍 ID: <code>${escapeHtml(String(item.idSite))}</code>`);
+      lines.push(`└ 🔌 Último dispositivo: ${escapeHtml(String(item.deviceName))}`);
+      lines.push(`└ ⏱️ Tiempo offline: <b>${item.elapsed}</b>`);
+      lines.push(`└ 🕐 Desde: ${item.lastConnection.toLocaleString("es-ES", { timeZone: TIMEZONE })}`);
+      lines.push("");
     }
-    await sendToAllAuthorized(lines.join("\n"));
+    
+    // 🔧 IMPORTANTE: Añadir { parse_mode: "HTML" }
+    await sendToAllAuthorized(lines.join("\n"), { parse_mode: "HTML" });
+    
   } catch (error) {
     console.error("[CRON] Error:", error.message);
-    await sendToAllAuthorized(`❌ Error en comprobación automática:\n<code>${escapeHtml(error.message)}</code>`);
+    // 🔧 También aquí añadir parse_mode
+    await sendToAllAuthorized(
+      `❌ <b>Error en comprobación automática</b>\n\n<code>${escapeHtml(error.message)}</code>`,
+      { parse_mode: "HTML" }
+    );
   }
 }
 
